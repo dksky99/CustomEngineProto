@@ -1,0 +1,24 @@
+# Visual Studio 중간 파일 및 빌드 결과물
+.vs/
+out/
+build/
+bin/
+obj/
+x64/
+x86/
+Debug/
+Release/
+
+# DX12 관련 임시 파일 및 캐시
+*.pso
+*.cso
+*.pch
+*.pdb
+*.ilk
+*.exe
+*.dll
+
+# 기타 로그 및 사용자 설정
+*.log
+*.suo
+*.user

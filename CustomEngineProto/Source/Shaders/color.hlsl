@@ -9,6 +9,11 @@ cbuffer cbPerObject : register(b0)
     float4 gLightColor; // 빛의 색상입니다. (R, G, B, A)
 }; // 상수 버퍼 블록 끝
 
+// 텍스처 이미지 데이터(t0)와, 텍스처를 읽어올 방식(샘플러, s0)을 선언합니다.
+Texture2D gDiffuseMap : register(t0);
+SamplerState gsSamPointWrap : register(s0);
+
+
 // 정점 셰이더(Vertex Shader)로 들어올 입력 데이터의 형식을 정의하는 구조체입니다.
 // 나중에 C++ 코드에서 버텍스 버퍼(Vertex Buffer)를 만들 때 이 형식과 정확히 일치시켜야 합니다.
 struct VSInput
@@ -16,6 +21,8 @@ struct VSInput
     float3 Pos : POSITION; // 3차원 벡터(X, Y, Z)로 구성된 위치(Position) 데이터입니다. 시맨틱(Semantic) 이름은 POSITION입니다.
     float4 Color : COLOR; // 4차원 벡터(R, G, B, A)로 구성된 색상(Color) 데이터입니다. 시맨틱 이름은 COLOR입니다.
     float3 Normal : NORMAL; // --- 새롭게 추가됨: 이 꼭짓점이 바라보는 방향(법선 벡터)입니다. ---
+     // C++에서 넘겨줄 텍스처 UV 좌표(2D)를 추가합니다.
+    float2 TexC : TEXCOORD;
 }; // VSInput 구조체 끝
 
 // 정점 셰이더가 계산을 마치고 픽셀 셰이더(Pixel Shader)로 넘겨줄 출력 데이터의 형식을 정의하는 구조체입니다.
@@ -24,6 +31,8 @@ struct PSInput
     float4 Pos : SV_POSITION; // 화면상에 그려질 최종 2D 좌표 위치입니다. SV_POSITION은 시스템(SV)이 예약한 아주 중요한 키워드입니다.
     float4 Color : COLOR; // 버텍스 셰이더에서 받아온 색상 정보를 그대로 픽셀 셰이더로 전달하기 위한 변수입니다.
     float3 NormalW : NORMAL; // --- 새롭게 추가됨: 월드 공간(World Space)으로 변환된 법선 벡터입니다. ---
+    
+    float2 TexC : TEXCOORD; // 버텍스 셰이더에서 픽셀 셰이더로 넘겨줄 UV 좌표입니다.
 }; // PSInput 구조체 끝
 
 // 1. 버텍스 셰이더의 메인 함수입니다. (각각의 꼭짓점마다 한 번씩 실행됩니다)
@@ -44,6 +53,9 @@ PSInput VSMain(VSInput input)
     output.NormalW = mul(input.Normal, (float3x3) gWorld);
     // 정점이 가지고 있던 색상 데이터는 변형 없이 그대로 출력 구조체에 복사합니다.
     output.Color = input.Color;
+    
+     // 정점의 UV 좌표를 그대로 픽셀 셰이더로 토스합니다.
+    output.TexC = input.TexC;
     
     return output; // 위치와 색상이 채워진 결과물을 픽셀 셰이더로 반환하여 넘깁니다.
 } // VSMain 함수 끝
@@ -68,13 +80,16 @@ float4 PSMain(PSInput input) : SV_TARGET
     // 5. 난반사(Diffuse): 빛의 색상에 방금 구한 빛의 세기(ndotl)를 곱해줍니다.
     float3 diffuse = ndotl * gLightColor.rgb;
     
-    // 6. 최종 색상 계산: 물체 본래의 색상(input.Color)에 (환경광 + 난반사)를 곱해 최종 픽셀 색상을 완성합니다!
-    float3 finalColor = input.Color.rgb * (ambient + diffuse);
+    // 6. 샘플러를 이용해 현재 픽셀 위치(TexC)에 해당하는 텍스처 색상을 뽑아옵니다.
+    float4 texColor = gDiffuseMap.Sample(gsSamPointWrap, input.TexC);
+    
+    // 7. 뽑아온 텍스처 색상에 빛(조명)을 곱해서 최종 색상을 만듭니다!
+    float3 finalColor = texColor.rgb * (ambient + diffuse);
     
     
     
     // 버텍스 셰이더에서 넘겨준 색상(Color) 값을 그대로 최종 픽셀의 색상으로 결정하여 반환합니다.
     // (이 과정에서 삼각형의 세 꼭짓점 색상이 다를 경우, 중간 픽셀들은 자동으로 자연스럽게 섞인(Interpolated) 색상이 됩니다)
-    return float4(finalColor, input.Color.a); // 화면에 색상 출력
+    return float4(finalColor, 1.0f);
 
 } // PSMain 함수 끝

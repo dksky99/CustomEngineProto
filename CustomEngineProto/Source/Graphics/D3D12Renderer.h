@@ -16,6 +16,8 @@ struct Vertex
     DirectX::XMFLOAT3 Pos; // 3차원 위치 데이터 (X, Y, Z) 입니다.
     DirectX::XMFLOAT4 Color; // 4차원 색상 데이터 (R, G, B, A) 입니다.
     DirectX::XMFLOAT3 Normal; // --- 새롭게 추가됨: 이 점이 바라보는 방향(법선 벡터)입니다. ---
+    // 정점이 텍스처 이미지의 어느 좌표(U, V)를 참조할지 나타내는 2D 데이터입니다.
+    DirectX::XMFLOAT2 TexC;
 }; // Vertex 구조체 끝
 
 
@@ -74,7 +76,8 @@ private:
 
     // 상수 버퍼를 생성하는 함수입니다. ---
     bool BuildConstantBuffers();
-
+    // C++에서 직접 체크무늬 이미지를 만들어 GPU로 올리는 함수입니다.
+    bool BuildTexture();
 
 private: // 클래스 내부에서만 접근 가능한 그래픽스 인터페이스 객체들입니다.
     ComPtr<IDXGIFactory4> mDxgiFactory; // 스왑 체인을 생성하고 하드웨어 어댑터를 열거할 DXGI 팩토리 객체입니다.
@@ -130,6 +133,11 @@ private: // 클래스 내부에서만 접근 가능한 그래픽스 인터페이스 객체들입니다.
     ComPtr<ID3D12DescriptorHeap> mCbvHeap; // 상수 버퍼에 대한 접근 권한(뷰)을 담을 전용 서랍장입니다.
     UINT mCbvSrvUavDescriptorSize; // CBV 서랍장 한 칸의 크기를 기억할 변수입니다.
     ObjectConstants* mMappedObjectCB = nullptr; // CPU에서 GPU 메모리에 직접 데이터를 쓰기 위해 꽂아둘 포인터입니다.
+
+    // 텍스처 이미지 메모리와, 이미지를 GPU로 넘기기 전 사용하는 업로드 메모리입니다.
+    ComPtr<ID3D12Resource> mTexture;
+    ComPtr<ID3D12Resource> mTextureUploadBuffer;
+
 
     // --- 3D 공간을 구성할 기본 행렬들입니다. ---
     DirectX::XMFLOAT4X4 mWorld; // 오브젝트의 위치, 회전, 크기를 나타내는 월드 행렬입니다.

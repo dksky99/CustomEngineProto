@@ -15,6 +15,7 @@ struct Vertex
 { // Vertex 구조체 시작
     DirectX::XMFLOAT3 Pos; // 3차원 위치 데이터 (X, Y, Z) 입니다.
     DirectX::XMFLOAT4 Color; // 4차원 색상 데이터 (R, G, B, A) 입니다.
+    DirectX::XMFLOAT3 Normal; // --- 새롭게 추가됨: 이 점이 바라보는 방향(법선 벡터)입니다. ---
 }; // Vertex 구조체 끝
 
 
@@ -28,6 +29,13 @@ struct ObjectConstants
         0.0f, 0.0f, 1.0f, 0.0f, // 3행
         0.0f, 0.0f, 0.0f, 1.0f  // 4행
     }; // 초기화 끝
+    DirectX::XMFLOAT4X4 World = // --- 새롭게 추가됨: 4x4 월드 행렬 (법선 변환용) ---
+    { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f };
+
+    DirectX::XMFLOAT3 LightDir = { 0.577f, -0.577f, 0.577f }; // --- 새롭게 추가됨: 빛의 방향 (기본: 우측 상단 뒤에서 비스듬히 쏘는 빛) ---
+    float padding = 0.0f; // HLSL의 16바이트 정렬 규칙을 맞추기 위한 빈칸입니다.
+
+    DirectX::XMFLOAT4 LightColor = { 1.0f, 1.0f, 1.0f, 1.0f }; // --- 새롭게 추가됨: 빛의 색상 (기본: 순수한 흰색 빛) ---
 }; // ObjectConstants 구조체 끝
 
 // 상수 버퍼 크기를 무조건 256바이트의 배수로 맞춰주는 유틸리티 함수입니다. (DX12 하드웨어 필수 규약)

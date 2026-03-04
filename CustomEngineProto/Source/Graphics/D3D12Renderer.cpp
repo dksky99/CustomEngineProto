@@ -193,6 +193,8 @@ void D3D12Renderer::Update(float deltaTime)
     // HLSL 셰이더는 기본적으로 열 우선(Column-Major) 행렬을 쓰므로, C++의 행 우선(Row-Major) 행렬을 전치(Transpose)해서 넘겨주어야 합니다.
     XMStoreFloat4x4(&objConstants.WorldViewProj, XMMatrixTranspose(worldViewProj));
 
+    // 2. 새롭게 추가된 World 행렬을 담습니다. (셰이더에서 법선 벡터를 3D 공간으로 변환할 때 사용됨)
+    XMStoreFloat4x4(&objConstants.World, XMMatrixTranspose(world));
     // 매핑된 GPU 메모리에 계산된 구조체를 통째로 덮어씌웁니다. (초고속 택배 발송!)
     memcpy(mMappedObjectCB, &objConstants, sizeof(ObjectConstants));
 }
@@ -343,10 +345,13 @@ bool D3D12Renderer::BuildPSO() // PSO 구축
     hr = D3DCompileFromFile(L"Source/Shaders/color.hlsl", nullptr, nullptr, "PSMain", "ps_5_0", compileFlags, 0, &pixelShader, &errorBlob);
     if (FAILED(hr)) { if (errorBlob) OutputDebugStringA((char*)errorBlob->GetBufferPointer()); return false; }
 
+    // --- 수정됨: 입력 레이아웃에 NORMAL(법선) 데이터를 추가했습니다! ---
     D3D12_INPUT_ELEMENT_DESC inputLayout[] =
     {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+        { "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        // 12바이트(위치) + 16바이트(색상) = 28바이트 오프셋부터 법선 벡터가 시작됩니다.
+        { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 28, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
     };
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
@@ -383,34 +388,54 @@ bool D3D12Renderer::BuildPSO() // PSO 구축
 // --- 새롭게 업데이트된 BuildGeometry (정육면체 버텍스 + 인덱스 버퍼) ---
 bool D3D12Renderer::BuildGeometry()
 {
-    // 1. 정육면체(Cube)를 구성하는 단 8개의 고유한 꼭짓점(Vertex)을 정의합니다.
     std::vector<Vertex> vertices =
     {
-        { DirectX::XMFLOAT3(-0.5f, -0.5f, -0.5f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f) }, // 0: 앞면 좌측 하단 (흰색)
-        { DirectX::XMFLOAT3(-0.5f, +0.5f, -0.5f), DirectX::XMFLOAT4(0.0f, 0.0f, 0.0f, 1.0f) }, // 1: 앞면 좌측 상단 (검은색)
-        { DirectX::XMFLOAT3(+0.5f, +0.5f, -0.5f), DirectX::XMFLOAT4(1.0f, 0.0f, 0.0f, 1.0f) }, // 2: 앞면 우측 상단 (빨간색)
-        { DirectX::XMFLOAT3(+0.5f, -0.5f, -0.5f), DirectX::XMFLOAT4(0.0f, 1.0f, 0.0f, 1.0f) }, // 3: 앞면 우측 하단 (초록색)
-        { DirectX::XMFLOAT3(-0.5f, -0.5f, +0.5f), DirectX::XMFLOAT4(0.0f, 0.0f, 1.0f, 1.0f) }, // 4: 뒷면 좌측 하단 (파란색)
-        { DirectX::XMFLOAT3(-0.5f, +0.5f, +0.5f), DirectX::XMFLOAT4(1.0f, 1.0f, 0.0f, 1.0f) }, // 5: 뒷면 좌측 상단 (노란색)
-        { DirectX::XMFLOAT3(+0.5f, +0.5f, +0.5f), DirectX::XMFLOAT4(0.0f, 1.0f, 1.0f, 1.0f) }, // 6: 뒷면 우측 상단 (청록색)
-        { DirectX::XMFLOAT3(+0.5f, -0.5f, +0.5f), DirectX::XMFLOAT4(1.0f, 0.0f, 1.0f, 1.0f) }  // 7: 뒷면 우측 하단 (자홍색)
+        // 1. 앞면 (Front Face) - 법선은 Z축 앞을 향함 (0, 0, -1)
+        { DirectX::XMFLOAT3(-0.5f, -0.5f, -0.5f), DirectX::XMFLOAT4(1.0f, 0.0f, 0.0f, 1.0f), DirectX::XMFLOAT3(0.0f, 0.0f, -1.0f) }, // 0
+        { DirectX::XMFLOAT3(-0.5f, +0.5f, -0.5f), DirectX::XMFLOAT4(1.0f, 0.0f, 0.0f, 1.0f), DirectX::XMFLOAT3(0.0f, 0.0f, -1.0f) }, // 1
+        { DirectX::XMFLOAT3(+0.5f, +0.5f, -0.5f), DirectX::XMFLOAT4(1.0f, 0.0f, 0.0f, 1.0f), DirectX::XMFLOAT3(0.0f, 0.0f, -1.0f) }, // 2
+        { DirectX::XMFLOAT3(+0.5f, -0.5f, -0.5f), DirectX::XMFLOAT4(1.0f, 0.0f, 0.0f, 1.0f), DirectX::XMFLOAT3(0.0f, 0.0f, -1.0f) }, // 3
+
+        // 2. 뒷면 (Back Face) - 법선은 Z축 뒤를 향함 (0, 0, 1)
+        { DirectX::XMFLOAT3(-0.5f, -0.5f, +0.5f), DirectX::XMFLOAT4(0.0f, 1.0f, 0.0f, 1.0f), DirectX::XMFLOAT3(0.0f, 0.0f, 1.0f) }, // 4
+        { DirectX::XMFLOAT3(+0.5f, -0.5f, +0.5f), DirectX::XMFLOAT4(0.0f, 1.0f, 0.0f, 1.0f), DirectX::XMFLOAT3(0.0f, 0.0f, 1.0f) }, // 5
+        { DirectX::XMFLOAT3(+0.5f, +0.5f, +0.5f), DirectX::XMFLOAT4(0.0f, 1.0f, 0.0f, 1.0f), DirectX::XMFLOAT3(0.0f, 0.0f, 1.0f) }, // 6
+        { DirectX::XMFLOAT3(-0.5f, +0.5f, +0.5f), DirectX::XMFLOAT4(0.0f, 1.0f, 0.0f, 1.0f), DirectX::XMFLOAT3(0.0f, 0.0f, 1.0f) }, // 7
+
+        // 3. 윗면 (Top Face) - 법선은 Y축 위를 향함 (0, 1, 0)
+        { DirectX::XMFLOAT3(-0.5f, +0.5f, -0.5f), DirectX::XMFLOAT4(0.0f, 0.0f, 1.0f, 1.0f), DirectX::XMFLOAT3(0.0f, 1.0f, 0.0f) }, // 8
+        { DirectX::XMFLOAT3(-0.5f, +0.5f, +0.5f), DirectX::XMFLOAT4(0.0f, 0.0f, 1.0f, 1.0f), DirectX::XMFLOAT3(0.0f, 1.0f, 0.0f) }, // 9
+        { DirectX::XMFLOAT3(+0.5f, +0.5f, +0.5f), DirectX::XMFLOAT4(0.0f, 0.0f, 1.0f, 1.0f), DirectX::XMFLOAT3(0.0f, 1.0f, 0.0f) }, // 10
+        { DirectX::XMFLOAT3(+0.5f, +0.5f, -0.5f), DirectX::XMFLOAT4(0.0f, 0.0f, 1.0f, 1.0f), DirectX::XMFLOAT3(0.0f, 1.0f, 0.0f) }, // 11
+
+        // 4. 아랫면 (Bottom Face) - 법선은 Y축 아래를 향함 (0, -1, 0)
+        { DirectX::XMFLOAT3(-0.5f, -0.5f, -0.5f), DirectX::XMFLOAT4(1.0f, 1.0f, 0.0f, 1.0f), DirectX::XMFLOAT3(0.0f, -1.0f, 0.0f) }, // 12
+        { DirectX::XMFLOAT3(+0.5f, -0.5f, -0.5f), DirectX::XMFLOAT4(1.0f, 1.0f, 0.0f, 1.0f), DirectX::XMFLOAT3(0.0f, -1.0f, 0.0f) }, // 13
+        { DirectX::XMFLOAT3(+0.5f, -0.5f, +0.5f), DirectX::XMFLOAT4(1.0f, 1.0f, 0.0f, 1.0f), DirectX::XMFLOAT3(0.0f, -1.0f, 0.0f) }, // 14
+        { DirectX::XMFLOAT3(-0.5f, -0.5f, +0.5f), DirectX::XMFLOAT4(1.0f, 1.0f, 0.0f, 1.0f), DirectX::XMFLOAT3(0.0f, -1.0f, 0.0f) }, // 15
+
+        // 5. 왼쪽 면 (Left Face) - 법선은 X축 왼쪽을 향함 (-1, 0, 0)
+        { DirectX::XMFLOAT3(-0.5f, -0.5f, +0.5f), DirectX::XMFLOAT4(1.0f, 0.0f, 1.0f, 1.0f), DirectX::XMFLOAT3(-1.0f, 0.0f, 0.0f) }, // 16
+        { DirectX::XMFLOAT3(-0.5f, +0.5f, +0.5f), DirectX::XMFLOAT4(1.0f, 0.0f, 1.0f, 1.0f), DirectX::XMFLOAT3(-1.0f, 0.0f, 0.0f) }, // 17
+        { DirectX::XMFLOAT3(-0.5f, +0.5f, -0.5f), DirectX::XMFLOAT4(1.0f, 0.0f, 1.0f, 1.0f), DirectX::XMFLOAT3(-1.0f, 0.0f, 0.0f) }, // 18
+        { DirectX::XMFLOAT3(-0.5f, -0.5f, -0.5f), DirectX::XMFLOAT4(1.0f, 0.0f, 1.0f, 1.0f), DirectX::XMFLOAT3(-1.0f, 0.0f, 0.0f) }, // 19
+
+        // 6. 오른쪽 면 (Right Face) - 법선은 X축 오른쪽을 향함 (1, 0, 0)
+        { DirectX::XMFLOAT3(+0.5f, -0.5f, -0.5f), DirectX::XMFLOAT4(0.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT3(1.0f, 0.0f, 0.0f) }, // 20
+        { DirectX::XMFLOAT3(+0.5f, +0.5f, -0.5f), DirectX::XMFLOAT4(0.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT3(1.0f, 0.0f, 0.0f) }, // 21
+        { DirectX::XMFLOAT3(+0.5f, +0.5f, +0.5f), DirectX::XMFLOAT4(0.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT3(1.0f, 0.0f, 0.0f) }, // 22
+        { DirectX::XMFLOAT3(+0.5f, -0.5f, +0.5f), DirectX::XMFLOAT4(0.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT3(1.0f, 0.0f, 0.0f) }  // 23
     };
 
-    // 2. 이 8개의 점을 어떻게 이어서 12개의 삼각형(면 6개 * 2)을 만들지 번호표(Index)를 작성합니다.
     std::vector<std::uint16_t> indices =
     {
-        // 앞면 (Front face)
-        0, 1, 2,  0, 2, 3,
-        // 뒷면 (Back face)
-        4, 6, 5,  4, 7, 6,
-        // 왼쪽 면 (Left face)
-        4, 5, 1,  4, 1, 0,
-        // 오른쪽 면 (Right face)
-        3, 2, 6,  3, 6, 7,
-        // 윗면 (Top face)
-        1, 5, 6,  1, 6, 2,
-        // 아랫면 (Bottom face)
-        4, 0, 3,  4, 3, 7
+        // 꼭짓점이 24개로 늘어났으므로, 인덱스 번호도 각 면(4개의 점)에 맞게 새로 이어줍니다.
+        0, 1, 2,  0, 2, 3,       // 앞면
+        4, 5, 6,  4, 6, 7,       // 뒷면
+        8, 9, 10, 8, 10, 11,     // 윗면
+        12, 13, 14, 12, 14, 15,  // 아랫면
+        16, 17, 18, 16, 18, 19,  // 왼쪽 면
+        20, 21, 22, 20, 22, 23   // 오른쪽 면
     };
 
     const UINT vbByteSize = (UINT)vertices.size() * sizeof(Vertex); // 정점 버퍼의 총 바이트 크기

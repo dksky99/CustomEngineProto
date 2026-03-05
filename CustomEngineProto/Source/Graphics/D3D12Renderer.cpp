@@ -177,6 +177,9 @@ bool D3D12Renderer::Initialize(HWND hwnd, int width, int height) // DX12 초기화 
 // --- Update 함수 구현 ---
 void D3D12Renderer::Update(float deltaTime)
 {
+    // ====================================================================
+    // [1단계: 카메라(View) 업데이트] - 플레이어의 조작을 받습니다.
+    // ====================================================================
     // 1. === 마우스 회전(시선 처리) 로직 ===
     POINT currentMousePos; // 현재 마우스 위치를 담을 변수입니다.
     GetCursorPos(&currentMousePos); // Windows API를 이용해 화면상 마우스 픽셀 위치를 가져옵니다.
@@ -228,13 +231,20 @@ void D3D12Renderer::Update(float deltaTime)
     XMMATRIX view = XMMatrixLookAtLH(camPos, camTarget, camUp);
     XMStoreFloat4x4(&mView, view); // 멤버 변수 갱신
 
-
+    // ====================================================================
+    // [2단계: 물체(World) 업데이트] - 오브젝트 스스로의 애니메이션입니다.
+    // ====================================================================
     static float totalTime = 0.0f; // 누적 시간을 저장할 정적 변수입니다.
     totalTime += deltaTime; // 프레임 간의 시간(DeltaTime)을 계속 더합니다.
 
     // 큐브가 더 멋지게 보이도록 X축과 Y축 양방향으로 회전시킵니다!
     XMMATRIX world = XMMatrixRotationX(totalTime * 0.5f) * XMMatrixRotationY(totalTime);
     XMStoreFloat4x4(&mWorld, world); // 갱신된 월드 행렬을 저장합니다.
+
+
+    // ====================================================================
+    // [3단계: 파이프라인 전송 (W * V * P)]
+    // ====================================================================
 
     // 월드, 투영 행렬을 메모리에서 불러옵니다.
     XMMATRIX proj = XMLoadFloat4x4(&mProj);

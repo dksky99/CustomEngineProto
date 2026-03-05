@@ -1,6 +1,8 @@
 #include "D3D12Renderer.h" // 헤더를 포함합니다.
 #include <d3dcompiler.h> // 셰이더 컴파일을 위한 헤더를 포함합니다.
 #include <vector> // C++의 동적 배열인 std::vector를 사용하기 위해 포함합니다.
+#include <algorithm> 
+
 
 // 소스 코드 내에서 링커에게 컴파일러 라이브러리를 연결하라고 지시합니다.
 #pragma comment(lib, "d3dcompiler.lib") 
@@ -22,13 +24,9 @@ bool D3D12Renderer::Initialize(HWND hwnd, int width, int height) // DX12 초기화 
     mClientWidth = width; // 창의 너비를 저장합니다.
     mClientHeight = height; // 창의 높이를 저장합니다.
 
-    // --- 새롭게 추가된 3D 카메라 및 투영 행렬 초기화 ---
-    // 카메라의 위치(0, 0, -2)와 바라볼 목표점(0, 0, 0), 위쪽 방향(Y축)을 설정합니다.
-    XMVECTOR pos = XMVectorSet(0.0f, 0.0f, -3.0f, 1.0f); // 카메라를 큐브를 잘 보기 위해 조금 더 뒤(-3.0)로 뺐습니다.
-    XMVECTOR target = XMVectorZero();
-    XMVECTOR up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
-    XMMATRIX view = XMMatrixLookAtLH(pos, target, up); // 뷰(View) 행렬을 생성합니다.
-    XMStoreFloat4x4(&mView, view); // 멤버 변수에 저장합니다.
+    
+    // 더 이상 여기서 고정된 View 행렬을 만들지 않습니다. Update 함수에서 매 프레임 실시간으로 만들 것입니다.
+    XMStoreFloat4x4(&mView, XMMatrixIdentity()); // 일단 단위 행렬로 초기화해 둡니다.
 
     // 화면 비율에 맞는 원근감을 만들어내는 투영(Projection) 행렬을 생성합니다. (시야각 45도)
     XMMATRIX proj = XMMatrixPerspectiveFovLH(0.25f * XM_PI, static_cast<float>(width) / height, 1.0f, 1000.0f);
@@ -171,12 +169,66 @@ bool D3D12Renderer::Initialize(HWND hwnd, int width, int height) // DX12 초기화 
     if (!BuildGeometry()) return false;      // 3. 기하학(버텍스+인덱스) 데이터 세팅
     if (!BuildConstantBuffers()) return false; // 4. 상수 버퍼 세팅 
 
+    GetCursorPos(&mLastMousePos);//마우스 델타값을 구하기 위해 시작할 때의 초기 마우스 위치를 한 번 찍어둡니다.
+
     return true; // 초기화 완벽히 성공!
 } // Initialize 함수의 끝
 
 // --- Update 함수 구현 ---
 void D3D12Renderer::Update(float deltaTime)
 {
+    // 1. === 마우스 회전(시선 처리) 로직 ===
+    POINT currentMousePos; // 현재 마우스 위치를 담을 변수입니다.
+    GetCursorPos(&currentMousePos); // Windows API를 이용해 화면상 마우스 픽셀 위치를 가져옵니다.
+
+    // GetAsyncKeyState 함수를 사용해 마우스 우클릭(VK_RBUTTON)이 현재 눌려있는지 확인합니다. (0x8000 마스크 비트 확인)
+    if ((GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0)
+    {
+        // 이전 프레임 대비 마우스가 가로(x), 세로(y)로 얼마나 픽셀 이동했는지(Delta) 구합니다.
+        // 마우스 감도를 낮추기 위해 0.25f를 곱해주고, 각도(Radian)로 변환(XMConvertToRadians)합니다.
+        float dx = XMConvertToRadians(0.25f * static_cast<float>(currentMousePos.x - mLastMousePos.x));
+        float dy = XMConvertToRadians(0.25f * static_cast<float>(currentMousePos.y - mLastMousePos.y));
+
+        mCameraYaw += dx; // 가로 움직임은 좌우 회전(Yaw)에 더해줍니다.
+        mCameraPitch += dy; // 세로 움직임은 상하 회전(Pitch)에 더해줍니다.
+
+        // 플레이어가 목을 위아래로 꺾다가 한 바퀴 돌아버리지(뒤집히지) 않도록, 상하 각도를 -89도 ~ +89도 정도로 제한(Clamp)합니다.
+        mCameraPitch = std::clamp(mCameraPitch, -1.5f, 1.5f); // 1.5 라디안은 약 86도입니다.
+    }
+    mLastMousePos = currentMousePos; // 다음 프레임 계산을 위해 현재 위치를 과거 위치로 업데이트합니다.
+
+    // 2. === 방향 벡터 계산 로직 ===
+    // 방금 구한 상하/좌우 회전각(Pitch, Yaw)을 바탕으로 '카메라의 회전 행렬'을 만듭니다.
+    XMMATRIX camRotation = XMMatrixRotationRollPitchYaw(mCameraPitch, mCameraYaw, 0.0f);
+
+    // 기본 방향(앞: Z축, 오른쪽: X축, 위쪽: Y축) 벡터들에 방금 만든 회전 행렬을 곱해서 '카메라 기준의 진짜 방향 벡터'를 얻어냅니다.
+    XMVECTOR camForward = XMVector3TransformNormal(XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f), camRotation); // 카메라가 바라보는 앞방향
+    XMVECTOR camRight = XMVector3TransformNormal(XMVectorSet(1.0f, 0.0f, 0.0f, 0.0f), camRotation); // 카메라 기준 오른쪽
+    XMVECTOR camUp = XMVector3TransformNormal(XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f), camRotation); // 카메라 기준 위쪽
+
+    // 3. === 키보드 이동(WASD) 로직 ===
+    XMVECTOR camPos = XMLoadFloat3(&mCameraPos); // 멤버 변수에 저장된 카메라 위치를 SIMD 연산용 벡터로 불러옵니다.
+    float moveSpeed = 5.0f * deltaTime; // 1초에 5 유닛(미터)씩 이동하도록 속도를 설정합니다.
+
+    // GetAsyncKeyState로 W, A, S, D, Q, E 키가 눌려있는지 실시간으로 확인합니다.
+    if (GetAsyncKeyState('W') & 0x8000) camPos += camForward * moveSpeed; // 앞(Forward)으로 이동
+    if (GetAsyncKeyState('S') & 0x8000) camPos -= camForward * moveSpeed; // 뒤로 이동
+    if (GetAsyncKeyState('D') & 0x8000) camPos += camRight * moveSpeed;   // 우측(Right)으로 이동 (게걸음)
+    if (GetAsyncKeyState('A') & 0x8000) camPos -= camRight * moveSpeed;   // 좌측으로 이동
+    if (GetAsyncKeyState('E') & 0x8000) camPos += camUp * moveSpeed;      // 위(Up)로 상승 (수직 비행)
+    if (GetAsyncKeyState('Q') & 0x8000) camPos -= camUp * moveSpeed;      // 아래로 하강
+
+    XMStoreFloat3(&mCameraPos, camPos); // 키보드 조작으로 갱신된 위치를 다시 멤버 변수에 저장해 둡니다.
+
+    // 4. === 최종 뷰(View) 행렬 업데이트 ===
+    // 카메라 위치(Pos)에 카메라 앞방향(Forward)을 더해서 '카메라가 바라보는 목표 지점(Target)'을 계산합니다.
+    XMVECTOR camTarget = camPos + camForward;
+
+    // (위치, 목표 지점, 위쪽 방향) 이 3가지 정보를 조합하여 최종 뷰 행렬을 만들어냅니다!
+    XMMATRIX view = XMMatrixLookAtLH(camPos, camTarget, camUp);
+    XMStoreFloat4x4(&mView, view); // 멤버 변수 갱신
+
+
     static float totalTime = 0.0f; // 누적 시간을 저장할 정적 변수입니다.
     totalTime += deltaTime; // 프레임 간의 시간(DeltaTime)을 계속 더합니다.
 
@@ -184,8 +236,7 @@ void D3D12Renderer::Update(float deltaTime)
     XMMATRIX world = XMMatrixRotationX(totalTime * 0.5f) * XMMatrixRotationY(totalTime);
     XMStoreFloat4x4(&mWorld, world); // 갱신된 월드 행렬을 저장합니다.
 
-    // 월드, 뷰, 투영 행렬을 메모리에서 불러옵니다.
-    XMMATRIX view = XMLoadFloat4x4(&mView);
+    // 월드, 투영 행렬을 메모리에서 불러옵니다.
     XMMATRIX proj = XMLoadFloat4x4(&mProj);
 
     // 3개의 행렬을 곱하여 최종 변환 행렬(World * View * Projection)을 만듭니다.

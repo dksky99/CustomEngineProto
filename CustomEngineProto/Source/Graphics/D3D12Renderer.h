@@ -139,6 +139,13 @@ private: // 클래스 내부에서만 접근 가능한 그래픽스 인터페이스 객체들입니다.
     ComPtr<ID3D12Resource> mTextureUploadBuffer;
 
 
+    // 자유 카메라를 위한 변수들 
+    DirectX::XMFLOAT3 mCameraPos = { 0.0f, 0.0f, -3.0f }; // 카메라의 현재 3D 위치를 저장합니다. (기본값: Z축 뒤쪽)
+    float mCameraPitch = 0.0f; // 카메라가 위/아래를 쳐다보는 각도(Pitch)입니다.
+    float mCameraYaw = 0.0f; // 카메라가 좌/우를 쳐다보는 각도(Yaw)입니다.
+    POINT mLastMousePos = { 0, 0 }; // 마우스가 얼마나 움직였는지 계산하기 위해 이전 프레임의 마우스 위치를 저장합니다.
+
+
     // --- 3D 공간을 구성할 기본 행렬들입니다. ---
     DirectX::XMFLOAT4X4 mWorld; // 오브젝트의 위치, 회전, 크기를 나타내는 월드 행렬입니다.
     DirectX::XMFLOAT4X4 mView; // 카메라의 위치와 바라보는 방향을 나타내는 뷰(View) 행렬입니다.

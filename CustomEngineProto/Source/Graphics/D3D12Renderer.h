@@ -20,25 +20,28 @@ struct Vertex
     DirectX::XMFLOAT2 TexC;
 }; // Vertex 구조체 끝
 
-
+//  단 1개의 큐브를 위한 상수 버퍼가 아니라, 여러 개의 큐브(인스턴스) 데이터를 담을 수 있도록 수정합니다!
+// 1. 모든 큐브가 공유하는 전역 데이터 (카메라 뷰/프로젝션, 빛 정보)
+struct PassConstants
+{
+    DirectX::XMFLOAT4X4 ViewProj = { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f }; // V * P 행렬
+    DirectX::XMFLOAT3 LightDir = { 0.577f, -0.577f, 0.577f }; // 공통 빛 방향
+    float padding = 0.0f; // 패딩
+    DirectX::XMFLOAT4 LightColor = { 1.0f, 1.0f, 1.0f, 1.0f }; // 공통 빛 색상
+};
 // CPU에서 계산한 행렬 데이터를 GPU(셰이더)로 넘겨주기 위한 상수 구조체입니다.
+// 2. 각각의 큐브(인스턴스)마다 다르게 가질 고유 데이터 (월드 위치/회전)
 struct ObjectConstants
-{ // ObjectConstants 구조체 시작
-    DirectX::XMFLOAT4X4 WorldViewProj = // 4x4 크기의 월드-뷰-프로젝션 결합 행렬입니다.
-    { // 단위 행렬(Identity Matrix)로 기본 초기화합니다.
-        1.0f, 0.0f, 0.0f, 0.0f, // 1행
-        0.0f, 1.0f, 0.0f, 0.0f, // 2행
-        0.0f, 0.0f, 1.0f, 0.0f, // 3행
-        0.0f, 0.0f, 0.0f, 1.0f  // 4행
-    }; // 초기화 끝
-    DirectX::XMFLOAT4X4 World = // --- 새롭게 추가됨: 4x4 월드 행렬 (법선 변환용) ---
-    { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f };
+{
+    DirectX::XMFLOAT4X4 World = { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f }; // 각 큐브의 월드 행렬
+};
 
-    DirectX::XMFLOAT3 LightDir = { 0.577f, -0.577f, 0.577f }; // --- 새롭게 추가됨: 빛의 방향 (기본: 우측 상단 뒤에서 비스듬히 쏘는 빛) ---
-    float padding = 0.0f; // HLSL의 16바이트 정렬 규칙을 맞추기 위한 빈칸입니다.
+// 이번 예제에서 그릴 큐브의 총 개수를 상수로 정의합니다! (10 x 10 = 100개)
+const int NumInstances = 100;
 
-    DirectX::XMFLOAT4 LightColor = { 1.0f, 1.0f, 1.0f, 1.0f }; // --- 새롭게 추가됨: 빛의 색상 (기본: 순수한 흰색 빛) ---
-}; // ObjectConstants 구조체 끝
+
+
+
 
 // 상수 버퍼 크기를 무조건 256바이트의 배수로 맞춰주는 유틸리티 함수입니다. (DX12 하드웨어 필수 규약)
 inline UINT CalcConstantBufferByteSize(UINT byteSize)
@@ -129,10 +132,18 @@ private: // 클래스 내부에서만 접근 가능한 그래픽스 인터페이스 객체들입니다.
 
 
     // ---  상수 버퍼(CBV) 관련 변수들입니다. ---
-    ComPtr<ID3D12Resource> mObjectCB; // 행렬 데이터를 담을 GPU 상수 버퍼 메모리입니다.
-    ComPtr<ID3D12DescriptorHeap> mCbvHeap; // 상수 버퍼에 대한 접근 권한(뷰)을 담을 전용 서랍장입니다.
-    UINT mCbvSrvUavDescriptorSize; // CBV 서랍장 한 칸의 크기를 기억할 변수입니다.
-    ObjectConstants* mMappedObjectCB = nullptr; // CPU에서 GPU 메모리에 직접 데이터를 쓰기 위해 꽂아둘 포인터입니다.
+     // [변경점 시작] 상수 버퍼를 2개로 분리합니다! (전역 데이터 1개 + 100개의 큐브 고유 데이터 배열) 
+    ComPtr<ID3D12Resource> mPassCB; // 카메라/빛 등 공통(Pass) 데이터를 담을 상수 버퍼입니다.
+    PassConstants* mMappedPassCB = nullptr; // Pass 상수 버퍼 CPU 맵핑 포인터
+
+    ComPtr<ID3D12Resource> mObjectCB; // 100개의 큐브 위치(World) 데이터를 배열로 담을 거대한 상수 버퍼입니다.
+    ObjectConstants* mMappedObjectCB = nullptr; // Object 상수 버퍼 배열 CPU 맵핑 포인터, CPU에서 GPU 메모리에 직접 데이터를 쓰기 위해 꽂아둘 포인터입니다.
+
+    ComPtr<ID3D12DescriptorHeap> mCbvHeap; // 상수 버퍼/텍스처를 담을 서랍장입니다.
+    UINT mCbvSrvUavDescriptorSize = 0;// CBV 서랍장 한 칸의 크기를 기억할 변수입니다.
+
+
+
 
     // 텍스처 이미지 메모리와, 이미지를 GPU로 넘기기 전 사용하는 업로드 메모리입니다.
     ComPtr<ID3D12Resource> mTexture;
@@ -140,14 +151,15 @@ private: // 클래스 내부에서만 접근 가능한 그래픽스 인터페이스 객체들입니다.
 
 
     // 자유 카메라를 위한 변수들 
-    DirectX::XMFLOAT3 mCameraPos = { 0.0f, 0.0f, -3.0f }; // 카메라의 현재 3D 위치를 저장합니다. (기본값: Z축 뒤쪽)
-    float mCameraPitch = 0.0f; // 카메라가 위/아래를 쳐다보는 각도(Pitch)입니다.
+    DirectX::XMFLOAT3 mCameraPos = { 0.0f, 15.0f, -15.0f }; // 카메라의 현재 3D 위치를 저장합니다. (기본값: Z축 뒤쪽)
+    float mCameraPitch = 0.7f; // 카메라가 위/아래를 쳐다보는 각도(Pitch)입니다.
     float mCameraYaw = 0.0f; // 카메라가 좌/우를 쳐다보는 각도(Yaw)입니다.
     POINT mLastMousePos = { 0, 0 }; // 마우스가 얼마나 움직였는지 계산하기 위해 이전 프레임의 마우스 위치를 저장합니다.
-
+    
+    //  큐브 100개의 월드 행렬을 담을 배열을 선언합니다.
+    DirectX::XMFLOAT4X4 mWorld[NumInstances]; // 각 큐브의 고유한 위치 행렬들을 보관합니다.
 
     // --- 3D 공간을 구성할 기본 행렬들입니다. ---
-    DirectX::XMFLOAT4X4 mWorld; // 오브젝트의 위치, 회전, 크기를 나타내는 월드 행렬입니다.
     DirectX::XMFLOAT4X4 mView; // 카메라의 위치와 바라보는 방향을 나타내는 뷰(View) 행렬입니다.
     DirectX::XMFLOAT4X4 mProj; // 3D 원근감을 만들어내는 투영(Projection) 행렬입니다.
 

@@ -32,8 +32,29 @@ bool D3D12Renderer::Initialize(HWND hwnd, int width, int height) // DX12 초기화 
     XMMATRIX proj = XMMatrixPerspectiveFovLH(0.25f * XM_PI, static_cast<float>(width) / height, 1.0f, 1000.0f);
     XMStoreFloat4x4(&mProj, proj); // 멤버 변수에 저장합니다.
 
-    // 오브젝트의 기본 위치(월드 행렬)를 단위 행렬(변형 없음)로 초기화합니다.
-    XMStoreFloat4x4(&mWorld, XMMatrixIdentity());
+    // 10x10 격자 모양으로 총 100개의 큐브 위치(World 행렬)를 미리 쫙 깔아둡니다! 
+    for (int i = 0; i < 10; ++i) // 세로(Z축) 10줄
+    {
+        for (int j = 0; j < 10; ++j) // 가로(X축) 10줄
+        {
+            int index = i * 10 + j; // 0 ~ 99번 인덱스
+
+            // 큐브 사이의 간격을 2.0 단위로 벌려서 바둑판처럼 배치합니다. 중앙(0,0,0)을 기준으로 퍼지게 만듭니다.
+            float xPos = (j - 4.5f) * 2.0f;
+            float zPos = (i - 4.5f) * 2.0f;
+
+            // 이동(Translation) 행렬만 만들어서 해당 인덱스에 저장해 둡니다. (아직 회전은 적용 안 함)
+            XMMATRIX world = XMMatrixTranslation(xPos, 0.0f, zPos);
+            XMStoreFloat4x4(&mWorld[index], world);
+        }
+    }
+
+
+
+
+
+
+
     // ------------------------------------------------
 
     // 뷰포트 설정: 렌더링될 화면의 범위를 전체 창 크기로 지정합니다.
@@ -101,6 +122,7 @@ bool D3D12Renderer::Initialize(HWND hwnd, int width, int height) // DX12 초기화 
     // 7. 동기화 객체(Fence) 생성
     mDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&mFence));
     mRtvDescriptorSize = mDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    mCbvSrvUavDescriptorSize = mDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV); //  서랍장 크기 캐싱
 
     // 8. RTV 디스크립터 힙 생성
     D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc;
@@ -177,90 +199,83 @@ bool D3D12Renderer::Initialize(HWND hwnd, int width, int height) // DX12 초기화 
 // --- Update 함수 구현 ---
 void D3D12Renderer::Update(float deltaTime)
 {
-    // ====================================================================
-    // [1단계: 카메라(View) 업데이트] - 플레이어의 조작을 받습니다.
-    // ====================================================================
     // 1. === 마우스 회전(시선 처리) 로직 ===
-    POINT currentMousePos; // 현재 마우스 위치를 담을 변수입니다.
-    GetCursorPos(&currentMousePos); // Windows API를 이용해 화면상 마우스 픽셀 위치를 가져옵니다.
+    POINT currentMousePos;
+    GetCursorPos(&currentMousePos);
 
-    // GetAsyncKeyState 함수를 사용해 마우스 우클릭(VK_RBUTTON)이 현재 눌려있는지 확인합니다. (0x8000 마스크 비트 확인)
     if ((GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0)
     {
-        // 이전 프레임 대비 마우스가 가로(x), 세로(y)로 얼마나 픽셀 이동했는지(Delta) 구합니다.
-        // 마우스 감도를 낮추기 위해 0.25f를 곱해주고, 각도(Radian)로 변환(XMConvertToRadians)합니다.
         float dx = XMConvertToRadians(0.25f * static_cast<float>(currentMousePos.x - mLastMousePos.x));
         float dy = XMConvertToRadians(0.25f * static_cast<float>(currentMousePos.y - mLastMousePos.y));
 
-        mCameraYaw += dx; // 가로 움직임은 좌우 회전(Yaw)에 더해줍니다.
-        mCameraPitch += dy; // 세로 움직임은 상하 회전(Pitch)에 더해줍니다.
+        mCameraYaw += dx;
+        mCameraPitch += dy;
 
-        // 플레이어가 목을 위아래로 꺾다가 한 바퀴 돌아버리지(뒤집히지) 않도록, 상하 각도를 -89도 ~ +89도 정도로 제한(Clamp)합니다.
-        mCameraPitch = std::clamp(mCameraPitch, -1.5f, 1.5f); // 1.5 라디안은 약 86도입니다.
+        mCameraPitch = std::clamp(mCameraPitch, -1.5f, 1.5f);
     }
-    mLastMousePos = currentMousePos; // 다음 프레임 계산을 위해 현재 위치를 과거 위치로 업데이트합니다.
+    mLastMousePos = currentMousePos;
 
     // 2. === 방향 벡터 계산 로직 ===
-    // 방금 구한 상하/좌우 회전각(Pitch, Yaw)을 바탕으로 '카메라의 회전 행렬'을 만듭니다.
     XMMATRIX camRotation = XMMatrixRotationRollPitchYaw(mCameraPitch, mCameraYaw, 0.0f);
 
-    // 기본 방향(앞: Z축, 오른쪽: X축, 위쪽: Y축) 벡터들에 방금 만든 회전 행렬을 곱해서 '카메라 기준의 진짜 방향 벡터'를 얻어냅니다.
-    XMVECTOR camForward = XMVector3TransformNormal(XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f), camRotation); // 카메라가 바라보는 앞방향
-    XMVECTOR camRight = XMVector3TransformNormal(XMVectorSet(1.0f, 0.0f, 0.0f, 0.0f), camRotation); // 카메라 기준 오른쪽
-    XMVECTOR camUp = XMVector3TransformNormal(XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f), camRotation); // 카메라 기준 위쪽
+    XMVECTOR camForward = XMVector3TransformNormal(XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f), camRotation);
+    XMVECTOR camRight = XMVector3TransformNormal(XMVectorSet(1.0f, 0.0f, 0.0f, 0.0f), camRotation);
+    XMVECTOR camUp = XMVector3TransformNormal(XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f), camRotation);
 
     // 3. === 키보드 이동(WASD) 로직 ===
-    XMVECTOR camPos = XMLoadFloat3(&mCameraPos); // 멤버 변수에 저장된 카메라 위치를 SIMD 연산용 벡터로 불러옵니다.
-    float moveSpeed = 5.0f * deltaTime; // 1초에 5 유닛(미터)씩 이동하도록 속도를 설정합니다.
+    XMVECTOR camPos = XMLoadFloat3(&mCameraPos);
+    float moveSpeed = 5.0f * deltaTime;
 
-    // GetAsyncKeyState로 W, A, S, D, Q, E 키가 눌려있는지 실시간으로 확인합니다.
-    if (GetAsyncKeyState('W') & 0x8000) camPos += camForward * moveSpeed; // 앞(Forward)으로 이동
-    if (GetAsyncKeyState('S') & 0x8000) camPos -= camForward * moveSpeed; // 뒤로 이동
-    if (GetAsyncKeyState('D') & 0x8000) camPos += camRight * moveSpeed;   // 우측(Right)으로 이동 (게걸음)
-    if (GetAsyncKeyState('A') & 0x8000) camPos -= camRight * moveSpeed;   // 좌측으로 이동
-    if (GetAsyncKeyState('E') & 0x8000) camPos += camUp * moveSpeed;      // 위(Up)로 상승 (수직 비행)
-    if (GetAsyncKeyState('Q') & 0x8000) camPos -= camUp * moveSpeed;      // 아래로 하강
+    if (GetAsyncKeyState('W') & 0x8000) camPos += camForward * moveSpeed;
+    if (GetAsyncKeyState('S') & 0x8000) camPos -= camForward * moveSpeed;
+    if (GetAsyncKeyState('D') & 0x8000) camPos += camRight * moveSpeed;
+    if (GetAsyncKeyState('A') & 0x8000) camPos -= camRight * moveSpeed;
+    if (GetAsyncKeyState('E') & 0x8000) camPos += camUp * moveSpeed;
+    if (GetAsyncKeyState('Q') & 0x8000) camPos -= camUp * moveSpeed;
 
-    XMStoreFloat3(&mCameraPos, camPos); // 키보드 조작으로 갱신된 위치를 다시 멤버 변수에 저장해 둡니다.
+    XMStoreFloat3(&mCameraPos, camPos);
 
     // 4. === 최종 뷰(View) 행렬 업데이트 ===
-    // 카메라 위치(Pos)에 카메라 앞방향(Forward)을 더해서 '카메라가 바라보는 목표 지점(Target)'을 계산합니다.
     XMVECTOR camTarget = camPos + camForward;
 
-    // (위치, 목표 지점, 위쪽 방향) 이 3가지 정보를 조합하여 최종 뷰 행렬을 만들어냅니다!
     XMMATRIX view = XMMatrixLookAtLH(camPos, camTarget, camUp);
-    XMStoreFloat4x4(&mView, view); // 멤버 변수 갱신
-
-    // ====================================================================
-    // [2단계: 물체(World) 업데이트] - 오브젝트 스스로의 애니메이션입니다.
-    // ====================================================================
-    static float totalTime = 0.0f; // 누적 시간을 저장할 정적 변수입니다.
-    totalTime += deltaTime; // 프레임 간의 시간(DeltaTime)을 계속 더합니다.
-
-    // 큐브가 더 멋지게 보이도록 X축과 Y축 양방향으로 회전시킵니다!
-    XMMATRIX world = XMMatrixRotationX(totalTime * 0.5f) * XMMatrixRotationY(totalTime);
-    XMStoreFloat4x4(&mWorld, world); // 갱신된 월드 행렬을 저장합니다.
-
+    XMStoreFloat4x4(&mView, view);
 
     // ====================================================================
     // [3단계: 파이프라인 전송 (W * V * P)]
+    // 과거의 1개짜리 큐브 로직을 모두 지우고, 100개짜리로 완전히 통일했습니다!
     // ====================================================================
+    static float totalTime = 0.0f;
+    totalTime += deltaTime;
 
-    // 월드, 투영 행렬을 메모리에서 불러옵니다.
     XMMATRIX proj = XMLoadFloat4x4(&mProj);
 
-    // 3개의 행렬을 곱하여 최종 변환 행렬(World * View * Projection)을 만듭니다.
-    XMMATRIX worldViewProj = world * view * proj;
+    // 1. 공통(Pass) 상수 버퍼 업데이트 (카메라의 V * P 1개)
+    XMMATRIX viewProj = view * proj;
 
-    // GPU로 보낼 구조체에 데이터를 채웁니다. 
-    ObjectConstants objConstants;
-    // HLSL 셰이더는 기본적으로 열 우선(Column-Major) 행렬을 쓰므로, C++의 행 우선(Row-Major) 행렬을 전치(Transpose)해서 넘겨주어야 합니다.
-    XMStoreFloat4x4(&objConstants.WorldViewProj, XMMatrixTranspose(worldViewProj));
+    PassConstants passConstants;
+    XMStoreFloat4x4(&passConstants.ViewProj, XMMatrixTranspose(viewProj));
+    memcpy(mMappedPassCB, &passConstants, sizeof(PassConstants));
 
-    // 2. 새롭게 추가된 World 행렬을 담습니다. (셰이더에서 법선 벡터를 3D 공간으로 변환할 때 사용됨)
-    XMStoreFloat4x4(&objConstants.World, XMMatrixTranspose(world));
-    // 매핑된 GPU 메모리에 계산된 구조체를 통째로 덮어씌웁니다. (초고속 택배 발송!)
-    memcpy(mMappedObjectCB, &objConstants, sizeof(ObjectConstants));
+    // 2. 100개 큐브의 고유(Object) 상수 버퍼 배열 업데이트 (각자의 World 행렬들)
+    for (int i = 0; i < NumInstances; ++i)
+    {
+        // 격자 위치 행렬을 불러옵니다.
+        XMMATRIX baseWorld = XMLoadFloat4x4(&mWorld[i]);
+
+        // 회원님께서 원하셨던 "큐브 개별 자전 애니메이션"이 바로 이곳에 있습니다! 
+        // 큐브마다 제각각 다른 속도와 방향으로 예쁘게 돌도록 i 값을 조금씩 섞어줍니다.
+        XMMATRIX rotation = XMMatrixRotationX(totalTime * (1.0f + i * 0.01f)) * XMMatrixRotationY(totalTime * (0.5f + i * 0.02f));
+        XMMATRIX finalWorld = rotation * baseWorld; // 자전(회전)한 뒤, 격자 위치로 보냅니다!
+
+        ObjectConstants objConstants;
+        XMStoreFloat4x4(&objConstants.World, XMMatrixTranspose(finalWorld));
+
+        // GPU 메모리에 100번 연속으로 복사해 줍니다.
+        UINT objCBByteSize = CalcConstantBufferByteSize(sizeof(ObjectConstants));
+        auto mappedAddress = reinterpret_cast<uint8_t*>(mMappedObjectCB) + (i * objCBByteSize);
+        memcpy(mappedAddress, &objConstants, sizeof(ObjectConstants));
+    }
 }
 
 // 매 프레임마다 화면을 렌더링하는 함수의 구현부입니다.
@@ -307,29 +322,36 @@ void D3D12Renderer::Draw()
 
     // 루트 시그니처(계약서) 세팅하기
     mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
-
-    // 서랍장의 첫 번째 칸(방금 Map 해둔 행렬 데이터)을 루트 시그니처의 0번 파라미터(b0)에 연결합니다!
+    // [변경점 시작] 렌더링 호출 (Draw Call)의 대격변! ====================================
+    // 루트 시그니처의 0번(b0) 파라미터에는 공통(Pass) 상수 버퍼를 꽂습니다. (서랍장 0번째 칸)
     mCommandList->SetGraphicsRootDescriptorTable(0, mCbvHeap->GetGPUDescriptorHandleForHeapStart());
 
-    // 서랍장(mCbvHeap)의 2번째 칸(인덱스 1번)에 넣어둔 '텍스처 뷰(SRV)'를 파이프라인의 1번 파라미터(t0)에 묶어줍니다!
+    // 루트 시그니처의 2번(t0) 파라미터에는 텍스처를 꽂습니다. (서랍장의 마지막 칸)
     CD3DX12_GPU_DESCRIPTOR_HANDLE srvHandle(mCbvHeap->GetGPUDescriptorHandleForHeapStart());
-    srvHandle.Offset(1, mDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV));
-    mCommandList->SetGraphicsRootDescriptorTable(1, srvHandle);
+    srvHandle.Offset(101, mCbvSrvUavDescriptorSize); // [Pass 1칸] + [Object 100칸] 뒤에 SRV가 있습니다!
+    mCommandList->SetGraphicsRootDescriptorTable(2, srvHandle);
 
+    mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST); // 삼각형 리스트 지정
+    mCommandList->IASetVertexBuffers(0, 1, &mVertexBufferView); // 버텍스 버퍼(큐브 1개 모델링 데이터) 꽂기
+    mCommandList->IASetIndexBuffer(&mIndexBufferView); // 인덱스 버퍼 꽂기
 
-    // 점들을 이어서 삼각형(TRIANGLELIST)으로 만들라고 지시하기
-    mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    // 인스턴싱 드로우 루프 
+    // Draw를 100번 부르는 것은 맞지만, 버퍼와 모델 데이터(큐브)를 다시 세팅할 필요 없이
+    // '몇 번째 큐브 데이터(World 행렬)를 읽어올지' 위치만 바꿔가며 100번 초고속으로 발사합니다!
+    CD3DX12_GPU_DESCRIPTOR_HANDLE objCbvHandle(mCbvHeap->GetGPUDescriptorHandleForHeapStart());
+    objCbvHandle.Offset(1, mCbvSrvUavDescriptorSize); // 첫 번째 Object CBV 칸(인덱스 1)으로 이동
 
-    // 파이프라인에 우리가 만든 정점 버퍼(꼭짓점 8개)를 꽂아 넣습니다.
-    mCommandList->IASetVertexBuffers(0, 1, &mVertexBufferView);
+    for (int i = 0; i < NumInstances; ++i)
+    {
+        // 루트 시그니처의 1번(b1) 파라미터에 "i번째 큐브의 고유 행렬 데이터"를 꽂아줍니다!
+        mCommandList->SetGraphicsRootDescriptorTable(1, objCbvHandle);
 
-    // --- 새롭게 추가된 부분: 파이프라인에 인덱스 버퍼(번호표)를 꽂아 넣습니다! ---
-    mCommandList->IASetIndexBuffer(&mIndexBufferView);
+        // "그려라!" (큐브 1개 분량의 인덱스 36개를 1번 그립니다.)
+        mCommandList->DrawIndexedInstanced(mIndexCount, 1, 0, 0, 0);
 
-    // --- 수정된 부분: DrawInstanced 대신 DrawIndexedInstanced를 사용하여 인덱스 기반으로 그립니다! ---
-    // 첫 번째 파라미터(mIndexCount)는 총 36개의 인덱스를 그리라는 의미입니다.
-    mCommandList->DrawIndexedInstanced(mIndexCount, 1, 0, 0, 0);
-    // ==========================================
+        // 다음 큐브 행렬 데이터 칸으로 포인터 이동
+        objCbvHandle.Offset(1, mCbvSrvUavDescriptorSize);
+    }
 
     // 4. 리소스 배리어 복구 
     barrier = CD3DX12_RESOURCE_BARRIER::Transition(
@@ -365,17 +387,25 @@ void D3D12Renderer::FlushCommandQueue()
 
 bool D3D12Renderer::BuildRootSignature()
 {
-    // 셰이더에게 "b0 슬롯(상수 버퍼) 1개를 사용할 거야"라고 알려주는 테이블을 만듭니다.
-    CD3DX12_DESCRIPTOR_RANGE cbvTable;
-    cbvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 0); // 타입(CBV), 개수(1), 셰이더 레지스터 번호(b0)
-    // 루트 시그니처에 "나는 텍스처(SRV) 1개도 받을 것이다(t0)"라는 조항을 추가합니다.
-    CD3DX12_DESCRIPTOR_RANGE srvTable;
-    srvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0); // t0 레지스터
+    // 새로운 셰이더 규칙(레지스터)에 맞게 계약서(루트 시그니처)를 완전히 새로 작성합니다! 
 
-    // 기존 1개였던 파라미터 배열을 2개로 늘리고, srvTable을 등록합니다.
-    CD3DX12_ROOT_PARAMETER rootParameters[2];
-    rootParameters[0].InitAsDescriptorTable(1, &cbvTable);
-    rootParameters[1].InitAsDescriptorTable(1, &srvTable);
+    // 1번 조항: 공통(Pass) 상수 버퍼 (b0) - 서랍장 형태
+    CD3DX12_DESCRIPTOR_RANGE cbvPassTable;
+    cbvPassTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 0); // b0
+
+    // 2번 조항: 고유(Object) 상수 버퍼 (b1) - 서랍장 형태
+    CD3DX12_DESCRIPTOR_RANGE cbvObjectTable;
+    cbvObjectTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 1); // b1
+
+    // 3번 조항: 텍스처 (t0) - 서랍장 형태
+    CD3DX12_DESCRIPTOR_RANGE srvTable;
+    srvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0); // t0
+
+    // 파라미터가 총 3개로 늘어납니다!
+    CD3DX12_ROOT_PARAMETER rootParameters[3] = {};
+    rootParameters[0].InitAsDescriptorTable(1, &cbvPassTable);    // 인덱스 0번: Pass
+    rootParameters[1].InitAsDescriptorTable(1, &cbvObjectTable);  // 인덱스 1번: Object
+    rootParameters[2].InitAsDescriptorTable(1, &srvTable);        // 인덱스 2번: Texture
 
     // 텍스처를 픽셀에 입힐 때 점으로 찍을지(Point), 부드럽게 뭉갤지(Linear) 결정하는 '샘플러'를 추가합니다.
     D3D12_STATIC_SAMPLER_DESC sampler = {};
@@ -394,8 +424,8 @@ bool D3D12Renderer::BuildRootSignature()
     sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL; // 픽셀 셰이더에서만 사용
 
     CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc;
-    // 파라미터 2개, 샘플러 1개를 등록하여 최종 루트 시그니처를 초기화합니다!
-    rootSigDesc.Init(2, rootParameters, 1, &sampler, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+    // 파라미터 2개, 샘플러 1개를 등록하여 최종 루트 시그니처를 초기화합니다! 합쳐서 3개
+    rootSigDesc.Init(3, rootParameters, 1, &sampler, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
 
     ComPtr<ID3DBlob> serializedRootSig = nullptr;
     ComPtr<ID3DBlob> errorBlob = nullptr;
@@ -574,48 +604,68 @@ bool D3D12Renderer::BuildGeometry()
 
 bool D3D12Renderer::BuildConstantBuffers()
 {
+    // CBV/SRV 서랍장을 더 크게 만들고, 버퍼도 2개(Pass, Object)를 생성합니다! 
     D3D12_DESCRIPTOR_HEAP_DESC cbvHeapDesc;
-    cbvHeapDesc.NumDescriptors = 2; // 행렬 서랍장(CBV) 1칸 + 텍스처 서랍장(SRV) 1칸 = 총 2칸으로 늘립니다!
+    // 서랍장 총 개수: [Pass 1개] + [Object 배열 100개] + [Texture 1개] = 총 102칸이 필요합니다!
+    cbvHeapDesc.NumDescriptors = 1 + NumInstances + 1;
     cbvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    cbvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE; // ★중요★ 셰이더가 볼 수 있게 허용
+    cbvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     cbvHeapDesc.NodeMask = 0;
     mDevice->CreateDescriptorHeap(&cbvHeapDesc, IID_PPV_ARGS(&mCbvHeap));
-    // --- 1. 첫 번째 칸: 행렬 상수 버퍼(CBV) 꽂기 ---
-    UINT objCBByteSize = (sizeof(ObjectConstants) + 255) & ~255; // 256의 배수로 올림 (매크로 대신 직접 식 사용)
 
+    // --- 1. Pass(공통) 버퍼 생성 및 첫 번째 칸(인덱스 0)에 꽂기 ---
+    UINT passCBByteSize = CalcConstantBufferByteSize(sizeof(PassConstants));
     CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_UPLOAD);
-    CD3DX12_RESOURCE_DESC bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(objCBByteSize);
+    CD3DX12_RESOURCE_DESC passBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(passCBByteSize);
 
-    mDevice->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &bufferDesc,
+    mDevice->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &passBufferDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&mPassCB));
+    mPassCB->Map(0, nullptr, reinterpret_cast<void**>(&mMappedPassCB));
+
+    D3D12_CONSTANT_BUFFER_VIEW_DESC passCbvDesc;
+    passCbvDesc.BufferLocation = mPassCB->GetGPUVirtualAddress();
+    passCbvDesc.SizeInBytes = passCBByteSize;
+
+    CD3DX12_CPU_DESCRIPTOR_HANDLE hDescriptor(mCbvHeap->GetCPUDescriptorHandleForHeapStart());
+    mDevice->CreateConstantBufferView(&passCbvDesc, hDescriptor); // 0번에 장착!
+
+
+    // --- 2. Object(고유) 버퍼 배열(100개) 생성 및 1~100번 칸에 연달아 꽂기 ---
+    UINT objCBByteSize = CalcConstantBufferByteSize(sizeof(ObjectConstants));
+    // 100개 분량의 거대한 메모리 덩어리 1개를 할당합니다.
+    CD3DX12_RESOURCE_DESC objBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(objCBByteSize * NumInstances);
+
+    mDevice->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &objBufferDesc,
         D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&mObjectCB));
-
     mObjectCB->Map(0, nullptr, reinterpret_cast<void**>(&mMappedObjectCB));
 
-    D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc;
-    cbvDesc.BufferLocation = mObjectCB->GetGPUVirtualAddress();
-    cbvDesc.SizeInBytes = objCBByteSize;
+    // 100번 반복하면서 서랍장의 1번부터 100번 칸에 차례대로 "배열의 n번째 조각을 읽어라!" 하고 뷰를 꽂아줍니다.
+    for (int i = 0; i < NumInstances; ++i)
+    {
+        D3D12_CONSTANT_BUFFER_VIEW_DESC objCbvDesc;
+        // 거대한 버퍼의 시작점에서 i번째 크기만큼 점프한 주소를 알려줍니다.
+        objCbvDesc.BufferLocation = mObjectCB->GetGPUVirtualAddress() + (i * objCBByteSize);
+        objCbvDesc.SizeInBytes = objCBByteSize;
 
-    mDevice->CreateConstantBufferView(&cbvDesc, mCbvHeap->GetCPUDescriptorHandleForHeapStart());
+        hDescriptor.Offset(1, mCbvSrvUavDescriptorSize); // 서랍장 한 칸 뒤로 이동
+        mDevice->CreateConstantBufferView(&objCbvDesc, hDescriptor); // i번에 장착!
+    }
 
-    // --- 2. 두 번째 칸: 텍스처 뷰(SRV) 꽂기 ---
-    // 서랍장의 주소를 가져와서 1칸(SRV 크기만큼) 뒤로 이동시킵니다.
-    CD3DX12_CPU_DESCRIPTOR_HANDLE hDescriptor(mCbvHeap->GetCPUDescriptorHandleForHeapStart());
-    hDescriptor.Offset(1, mDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV));
+    // --- 3. 마지막 101번 칸에 Texture 뷰(SRV) 꽂기 ---
+    hDescriptor.Offset(1, mCbvSrvUavDescriptorSize); // 또 한 칸 뒤로 이동
 
-    // 텍스처를 셰이더 리소스로 쓸 수 있도록 뷰(안경)를 만듭니다.
     D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
     srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    srvDesc.Format = mTexture->GetDesc().Format; // 텍스처 만들 때 썼던 포맷(RGBA)
+    srvDesc.Format = mTexture->GetDesc().Format;
     srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     srvDesc.Texture2D.MostDetailedMip = 0;
     srvDesc.Texture2D.MipLevels = mTexture->GetDesc().MipLevels;
     srvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
 
-    // 두 번째 칸에 텍스처 뷰(SRV)를 꽂아 넣습니다!
-    mDevice->CreateShaderResourceView(mTexture.Get(), &srvDesc, hDescriptor);
+    mDevice->CreateShaderResourceView(mTexture.Get(), &srvDesc, hDescriptor); // 마지막 칸에 장착!
+   
 
-
-    return true;
+    return true; // 성공 반환
 }
 
 // CPU에서 가상의 '체크무늬 텍스처'를 만들어 GPU로 올리는 완전히 새로운 함수입니다.

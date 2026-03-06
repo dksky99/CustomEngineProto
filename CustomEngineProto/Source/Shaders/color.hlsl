@@ -1,13 +1,20 @@
+// 상수 버퍼(cbuffer)를 역할에 맞게 2개로 완벽히 분리합니다! 
+
+// 1. 매 프레임 단 1번만 바뀌는 '공통 데이터 (Pass Constants)' - b0 레지스터
+cbuffer cbPass : register(b0)
+{
+    float4x4 gViewProj; // 카메라의 View * Projection 행렬입니다.
+    float3 gLightDir; // 공통 빛 방향입니다.
+    float pad;
+    float4 gLightColor; // 공통 빛 색상입니다.
+}; 
+
 // CPU로부터 매 프레임마다 변하는 상수(Constant) 데이터를 넘겨받기 위한 버퍼 블록입니다.
-// register(b0)는 이 데이터가 파이프라인의 'b0 (상수 버퍼 0번 슬롯)'에 꽂힐 것임을 의미합니다.
-cbuffer cbPerObject : register(b0)
-{ // 상수 버퍼 블록 시작
-    float4x4 gWorldViewProj; // 4x4 크기의 변환 행렬입니다. (World * View * Projection 행렬이 곱해진 최종 화면 좌표용)
-    float4x4 gWorld; // 4x4 크기의 월드 행렬입니다. (법선 벡터를 3D 월드 공간으로 변환하기 위해 추가되었습니다!)
-    float3 gLightDir; // 빛이 쏟아지는 방향 벡터입니다. (예: 위에서 아래로)
-    float pad; // 16바이트 정렬(Alignment)을 맞추기 위한 빈칸(패딩)입니다.
-    float4 gLightColor; // 빛의 색상입니다. (R, G, B, A)
-}; // 상수 버퍼 블록 끝
+// register(b1)는 이 데이터가 파이프라인의 'b1(상수 버퍼 1번 슬롯)'에 꽂힐 것임을 의미합니다.
+cbuffer cbPerObject : register(b1)
+{
+    float4x4 gWorld; // 현재 그리고 있는 "이 큐브 하나"의 World 행렬입니다.
+}; 
 
 // 텍스처 이미지 데이터(t0)와, 텍스처를 읽어올 방식(샘플러, s0)을 선언합니다.
 Texture2D gDiffuseMap : register(t0);
@@ -45,11 +52,17 @@ PSInput VSMain(VSInput input)
     // 1. 위치 변환: 지역 좌표에 1.0을 더해 4D로 만들고 최종 행렬을 곱해 화면 좌표로 변환합니다.
      // 들어온 3D 지역 좌표(Local Position)에 w값 1.0을 추가하여 4D 벡터로 만듭니다.
     float4 posW = float4(input.Pos, 1.0f);
+    
+    
+     //  누락되었던 핵심 곱셈! 먼저 점들을 월드 행렬을 이용해 3D 공간 각자의 위치(격자 배열)로 보냅니다! 
+    posW = mul(posW, gWorld);
+    
     // 이 정점의 위치에 CPU에서 넘겨준 3D 변환 행렬(gWorldViewProj)을 곱(mul)합니다!
     // 이 한 줄의 연산이 2D였던 폴리곤을 원근감이 적용된 3D 공간의 위치로 튕겨내 줍니다.
-    output.Pos = mul(posW, gWorldViewProj);
+    output.Pos = mul(posW, gViewProj);
     
-     // 2. 법선 변환: 지역 좌표계에 있던 법선 화살표를 월드 행렬(gWorld)을 곱해 월드 공간의 화살표로 변환합니다.
+    
+    // 법선 벡터도 현재 큐브의 회전(World)을 반영해 변환합니다.
     output.NormalW = mul(input.Normal, (float3x3) gWorld);
     // 정점이 가지고 있던 색상 데이터는 변형 없이 그대로 출력 구조체에 복사합니다.
     output.Color = input.Color;

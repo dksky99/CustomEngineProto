@@ -255,6 +255,30 @@ void D3D12Renderer::Update(float deltaTime)
 
     PassConstants passConstants;
     XMStoreFloat4x4(&passConstants.ViewProj, XMMatrixTranspose(viewProj));
+
+    //  동적 조명(Dynamic Lighting) 시뮬레이션! 
+    // 시간에 따라 태양이 원을 그리며 도는 궤적을 계산합니다.
+    float sunSpeed = 0.5f; // 태양이 도는 속도입니다.
+    float sunX = cosf(totalTime * sunSpeed); // 시간에 따라 좌우(X축)로 움직입니다.
+    float sunY = sinf(totalTime * sunSpeed); // 시간에 따라 상하(Y축, 고도)로 움직입니다.
+    float sunZ = 0.5f; // 약간 비스듬하게 비추도록 Z축 고정값을 줍니다.
+
+    // 계산된 위치로 빛의 방향 벡터를 만듭니다. (빛이 쏟아지는 방향)
+    XMVECTOR lightDir = XMVectorSet(sunX, sunY, sunZ, 0.0f);
+    lightDir = XMVector3Normalize(lightDir); // 방향 벡터이므로 길이를 1로 정규화합니다.
+    XMStoreFloat3(&passConstants.LightDir, lightDir); // 상수 버퍼 구조체에 넣습니다.
+
+    // 태양의 고도(sunY)에 따라 빛의 색상과 밝기를 바꿉니다. (일몰/일출 효과)
+    // 태양이 가장 높을 때(sunY=1) 가장 밝고, 지평선 아래(sunY<0)로 떨어지면 어두워집니다.
+    float intensity = std::clamp(sunY + 0.2f, 0.0f, 1.0f); // 빛의 세기를 0.0 ~ 1.0 사이로 제한합니다.
+
+    // 약간의 노을 느낌을 주기 위해 빨간색(R)은 유지하고 초록(G), 파랑(B) 값을 조금 깎아냅니다.
+    passConstants.LightColor = { intensity, intensity * 0.9f, intensity * 0.8f, 1.0f };
+
+
+
+
+
     memcpy(mMappedPassCB, &passConstants, sizeof(PassConstants));
 
     // 2. 100개 큐브의 고유(Object) 상수 버퍼 배열 업데이트 (각자의 World 행렬들)

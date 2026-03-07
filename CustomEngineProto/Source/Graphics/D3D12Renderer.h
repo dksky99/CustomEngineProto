@@ -31,10 +31,13 @@ struct PassConstants
 };
 // CPU에서 계산한 행렬 데이터를 GPU(셰이더)로 넘겨주기 위한 상수 구조체입니다.
 // 2. 각각의 큐브(인스턴스)마다 다르게 가질 고유 데이터 (월드 위치/회전)
-struct ObjectConstants
+
+struct InstanceData
 {
-    DirectX::XMFLOAT4X4 World = { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f }; // 각 큐브의 월드 행렬
+    DirectX::XMFLOAT4X4 World = { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f };
 };
+// 
+
 
 // 이번 예제에서 그릴 큐브의 총 개수를 상수로 정의합니다! (10 x 10 = 100개)
 const int NumInstances = 100;
@@ -132,12 +135,13 @@ private: // 클래스 내부에서만 접근 가능한 그래픽스 인터페이스 객체들입니다.
 
 
     // ---  상수 버퍼(CBV) 관련 변수들입니다. ---
-     // [변경점 시작] 상수 버퍼를 2개로 분리합니다! (전역 데이터 1개 + 100개의 큐브 고유 데이터 배열) 
+     //  상수 버퍼를 2개로 분리합니다! (전역 데이터 1개 + 100개의 큐브 고유 데이터 배열) 
     ComPtr<ID3D12Resource> mPassCB; // 카메라/빛 등 공통(Pass) 데이터를 담을 상수 버퍼입니다.
     PassConstants* mMappedPassCB = nullptr; // Pass 상수 버퍼 CPU 맵핑 포인터
 
-    ComPtr<ID3D12Resource> mObjectCB; // 100개의 큐브 위치(World) 데이터를 배열로 담을 거대한 상수 버퍼입니다.
-    ObjectConstants* mMappedObjectCB = nullptr; // Object 상수 버퍼 배열 CPU 맵핑 포인터, CPU에서 GPU 메모리에 직접 데이터를 쓰기 위해 꽂아둘 포인터입니다.
+    // 상수 버퍼 배열(CBV)이 아니라, 구조체 버퍼(SRV)를 사용할 것입니다. 
+    ComPtr<ID3D12Resource> mInstanceBuffer;
+    InstanceData* mMappedInstanceData = nullptr;
 
     ComPtr<ID3D12DescriptorHeap> mCbvHeap; // 상수 버퍼/텍스처를 담을 서랍장입니다.
     UINT mCbvSrvUavDescriptorSize = 0;// CBV 서랍장 한 칸의 크기를 기억할 변수입니다.

@@ -292,13 +292,9 @@ void D3D12Renderer::Update(float deltaTime)
         XMMATRIX rotation = XMMatrixRotationX(totalTime * (1.0f + i * 0.01f)) * XMMatrixRotationY(totalTime * (0.5f + i * 0.02f));
         XMMATRIX finalWorld = rotation * baseWorld; // 자전(회전)한 뒤, 격자 위치로 보냅니다!
 
-        ObjectConstants objConstants;
-        XMStoreFloat4x4(&objConstants.World, XMMatrixTranspose(finalWorld));
-
-        // GPU 메모리에 100번 연속으로 복사해 줍니다.
-        UINT objCBByteSize = CalcConstantBufferByteSize(sizeof(ObjectConstants));
-        auto mappedAddress = reinterpret_cast<uint8_t*>(mMappedObjectCB) + (i * objCBByteSize);
-        memcpy(mappedAddress, &objConstants, sizeof(ObjectConstants));
+        
+        // 더 이상 복잡한 주소 계산이 필요 없습니다! 구조체 배열에 바로 대입합니다.
+        XMStoreFloat4x4(&mMappedInstanceData[i].World, XMMatrixTranspose(finalWorld));
     }
 }
 
@@ -346,36 +342,30 @@ void D3D12Renderer::Draw()
 
     // 루트 시그니처(계약서) 세팅하기
     mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
-    // [변경점 시작] 렌더링 호출 (Draw Call)의 대격변! ====================================
-    // 루트 시그니처의 0번(b0) 파라미터에는 공통(Pass) 상수 버퍼를 꽂습니다. (서랍장 0번째 칸)
-    mCommandList->SetGraphicsRootDescriptorTable(0, mCbvHeap->GetGPUDescriptorHandleForHeapStart());
+    
 
-    // 루트 시그니처의 2번(t0) 파라미터에는 텍스처를 꽂습니다. (서랍장의 마지막 칸)
-    CD3DX12_GPU_DESCRIPTOR_HANDLE srvHandle(mCbvHeap->GetGPUDescriptorHandleForHeapStart());
-    srvHandle.Offset(101, mCbvSrvUavDescriptorSize); // [Pass 1칸] + [Object 100칸] 뒤에 SRV가 있습니다!
-    mCommandList->SetGraphicsRootDescriptorTable(2, srvHandle);
+    // 서랍장의 첫 번째 주소(Pass 데이터)를 명시적으로 복사해 가져옵니다.
+    CD3DX12_GPU_DESCRIPTOR_HANDLE heapStart(mCbvHeap->GetGPUDescriptorHandleForHeapStart()); // <-- '=' 할당자 대신 명시적 생성자 괄호()를 사용하여 C++ 타입 에러를 고칩니다.
 
-    mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST); // 삼각형 리스트 지정
-    mCommandList->IASetVertexBuffers(0, 1, &mVertexBufferView); // 버텍스 버퍼(큐브 1개 모델링 데이터) 꽂기
-    mCommandList->IASetIndexBuffer(&mIndexBufferView); // 인덱스 버퍼 꽂기
+    // 0번 슬롯(b0)에 카메라, 조명 등 공통(Pass) 데이터를 꽂습니다.
+    CD3DX12_GPU_DESCRIPTOR_HANDLE passCbvHandle(heapStart, 0, mCbvSrvUavDescriptorSize); // 첫 번째 위치에서 시작합니다.
+    mCommandList->SetGraphicsRootDescriptorTable(0, passCbvHandle); // 파이프라인의 0번 슬롯에 묶습니다.
 
-    // 인스턴싱 드로우 루프 
-    // Draw를 100번 부르는 것은 맞지만, 버퍼와 모델 데이터(큐브)를 다시 세팅할 필요 없이
-    // '몇 번째 큐브 데이터(World 행렬)를 읽어올지' 위치만 바꿔가며 100번 초고속으로 발사합니다!
-    CD3DX12_GPU_DESCRIPTOR_HANDLE objCbvHandle(mCbvHeap->GetGPUDescriptorHandleForHeapStart());
-    objCbvHandle.Offset(1, mCbvSrvUavDescriptorSize); // 첫 번째 Object CBV 칸(인덱스 1)으로 이동
+    // 1번 슬롯(t0)에 체크무늬 텍스처(Texture) 이미지를 꽂습니다.
+    CD3DX12_GPU_DESCRIPTOR_HANDLE texSrvHandle(heapStart, 1, mCbvSrvUavDescriptorSize); // 한 칸 뒤(인덱스 1)로 이동합니다.
+    mCommandList->SetGraphicsRootDescriptorTable(1, texSrvHandle); // 파이프라인의 1번 슬롯에 묶습니다.
 
-    for (int i = 0; i < NumInstances; ++i)
-    {
-        // 루트 시그니처의 1번(b1) 파라미터에 "i번째 큐브의 고유 행렬 데이터"를 꽂아줍니다!
-        mCommandList->SetGraphicsRootDescriptorTable(1, objCbvHandle);
+    // 2번 슬롯(t1)에 100개의 큐브 위치가 전부 적힌 거대한 명부(배열, Structured Buffer)를 꽂습니다!
+    CD3DX12_GPU_DESCRIPTOR_HANDLE instSrvHandle(heapStart, 2, mCbvSrvUavDescriptorSize); // 한 칸 더 뒤(인덱스 2)로 이동합니다.
+    mCommandList->SetGraphicsRootDescriptorTable(2, instSrvHandle); // 파이프라인의 2번 슬롯에 묶습니다.
 
-        // "그려라!" (큐브 1개 분량의 인덱스 36개를 1번 그립니다.)
-        mCommandList->DrawIndexedInstanced(mIndexCount, 1, 0, 0, 0);
+    mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    mCommandList->IASetVertexBuffers(0, 1, &mVertexBufferView);
+    mCommandList->IASetIndexBuffer(&mIndexBufferView);
 
-        // 다음 큐브 행렬 데이터 칸으로 포인터 이동
-        objCbvHandle.Offset(1, mCbvSrvUavDescriptorSize);
-    }
+    // 단 1번의 명령으로 100개를 복사해서 그려라!! (이것이 하드웨어 인스턴싱입니다)
+    mCommandList->DrawIndexedInstanced(mIndexCount, NumInstances, 0, 0, 0);
+
 
     // 4. 리소스 배리어 복구 
     barrier = CD3DX12_RESOURCE_BARRIER::Transition(
@@ -417,19 +407,19 @@ bool D3D12Renderer::BuildRootSignature()
     CD3DX12_DESCRIPTOR_RANGE cbvPassTable;
     cbvPassTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 0); // b0
 
-    // 2번 조항: 고유(Object) 상수 버퍼 (b1) - 서랍장 형태
-    CD3DX12_DESCRIPTOR_RANGE cbvObjectTable;
-    cbvObjectTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 1); // b1
 
     // 3번 조항: 텍스처 (t0) - 서랍장 형태
     CD3DX12_DESCRIPTOR_RANGE srvTable;
     srvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0); // t0
+    // 이제 고유 데이터는 CBV(상수 버퍼)가 아니라 SRV(배열 버퍼)로 들어옵니다! 
+    CD3DX12_DESCRIPTOR_RANGE srvInstanceTable;
+    srvInstanceTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 1); // t1 (Instance Array)
 
-    // 파라미터가 총 3개로 늘어납니다!
     CD3DX12_ROOT_PARAMETER rootParameters[3] = {};
-    rootParameters[0].InitAsDescriptorTable(1, &cbvPassTable);    // 인덱스 0번: Pass
-    rootParameters[1].InitAsDescriptorTable(1, &cbvObjectTable);  // 인덱스 1번: Object
-    rootParameters[2].InitAsDescriptorTable(1, &srvTable);        // 인덱스 2번: Texture
+    rootParameters[0].InitAsDescriptorTable(1, &cbvPassTable);
+    rootParameters[1].InitAsDescriptorTable(1, &srvTable);
+    rootParameters[2].InitAsDescriptorTable(1, &srvInstanceTable); // t1 연결!
+   
 
     // 텍스처를 픽셀에 입힐 때 점으로 찍을지(Point), 부드럽게 뭉갤지(Linear) 결정하는 '샘플러'를 추가합니다.
     D3D12_STATIC_SAMPLER_DESC sampler = {};
@@ -628,16 +618,16 @@ bool D3D12Renderer::BuildGeometry()
 
 bool D3D12Renderer::BuildConstantBuffers()
 {
-    // CBV/SRV 서랍장을 더 크게 만들고, 버퍼도 2개(Pass, Object)를 생성합니다! 
+    //서랍장을 3칸으로 아주 깔끔하게 줄입니다! 
     D3D12_DESCRIPTOR_HEAP_DESC cbvHeapDesc;
-    // 서랍장 총 개수: [Pass 1개] + [Object 배열 100개] + [Texture 1개] = 총 102칸이 필요합니다!
-    cbvHeapDesc.NumDescriptors = 1 + NumInstances + 1;
+    // 인덱스 0: Pass CBV, 1: Texture SRV, 2: Instance SRV
+    cbvHeapDesc.NumDescriptors = 3;
     cbvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     cbvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     cbvHeapDesc.NodeMask = 0;
     mDevice->CreateDescriptorHeap(&cbvHeapDesc, IID_PPV_ARGS(&mCbvHeap));
 
-    // --- 1. Pass(공통) 버퍼 생성 및 첫 번째 칸(인덱스 0)에 꽂기 ---
+    // --- 0번 칸: Pass (공통 데이터) ---
     UINT passCBByteSize = CalcConstantBufferByteSize(sizeof(PassConstants));
     CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_UPLOAD);
     CD3DX12_RESOURCE_DESC passBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(passCBByteSize);
@@ -651,42 +641,43 @@ bool D3D12Renderer::BuildConstantBuffers()
     passCbvDesc.SizeInBytes = passCBByteSize;
 
     CD3DX12_CPU_DESCRIPTOR_HANDLE hDescriptor(mCbvHeap->GetCPUDescriptorHandleForHeapStart());
-    mDevice->CreateConstantBufferView(&passCbvDesc, hDescriptor); // 0번에 장착!
+    mDevice->CreateConstantBufferView(&passCbvDesc, hDescriptor);
 
+    // --- 1번 칸: Texture (체크무늬) ---
+    hDescriptor.Offset(1, mCbvSrvUavDescriptorSize); // 한 칸 뒤로 이동
 
-    // --- 2. Object(고유) 버퍼 배열(100개) 생성 및 1~100번 칸에 연달아 꽂기 ---
-    UINT objCBByteSize = CalcConstantBufferByteSize(sizeof(ObjectConstants));
-    // 100개 분량의 거대한 메모리 덩어리 1개를 할당합니다.
-    CD3DX12_RESOURCE_DESC objBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(objCBByteSize * NumInstances);
+    D3D12_SHADER_RESOURCE_VIEW_DESC texSrvDesc = {};
+    texSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    texSrvDesc.Format = mTexture->GetDesc().Format;
+    texSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    texSrvDesc.Texture2D.MostDetailedMip = 0;
+    texSrvDesc.Texture2D.MipLevels = mTexture->GetDesc().MipLevels;
+    texSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
 
-    mDevice->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &objBufferDesc,
-        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&mObjectCB));
-    mObjectCB->Map(0, nullptr, reinterpret_cast<void**>(&mMappedObjectCB));
+    mDevice->CreateShaderResourceView(mTexture.Get(), &texSrvDesc, hDescriptor);
 
-    // 100번 반복하면서 서랍장의 1번부터 100번 칸에 차례대로 "배열의 n번째 조각을 읽어라!" 하고 뷰를 꽂아줍니다.
-    for (int i = 0; i < NumInstances; ++i)
-    {
-        D3D12_CONSTANT_BUFFER_VIEW_DESC objCbvDesc;
-        // 거대한 버퍼의 시작점에서 i번째 크기만큼 점프한 주소를 알려줍니다.
-        objCbvDesc.BufferLocation = mObjectCB->GetGPUVirtualAddress() + (i * objCBByteSize);
-        objCbvDesc.SizeInBytes = objCBByteSize;
+    // --- 2번 칸: Instance Data 배열 (100개 큐브 명부) ---
+    hDescriptor.Offset(1, mCbvSrvUavDescriptorSize); // 한 칸 더 뒤로 이동
 
-        hDescriptor.Offset(1, mCbvSrvUavDescriptorSize); // 서랍장 한 칸 뒤로 이동
-        mDevice->CreateConstantBufferView(&objCbvDesc, hDescriptor); // i번에 장착!
-    }
+    // 구조체 배열(SRV)은 256바이트 정렬 규칙을 지키지 않아도 됩니다! 아주 촘촘하게 배열을 만듭니다.
+    UINT instanceBufferSize = sizeof(InstanceData) * NumInstances;
+    CD3DX12_RESOURCE_DESC instBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(instanceBufferSize);
 
-    // --- 3. 마지막 101번 칸에 Texture 뷰(SRV) 꽂기 ---
-    hDescriptor.Offset(1, mCbvSrvUavDescriptorSize); // 또 한 칸 뒤로 이동
+    mDevice->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &instBufferDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&mInstanceBuffer));
+    mInstanceBuffer->Map(0, nullptr, reinterpret_cast<void**>(&mMappedInstanceData));
 
-    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    srvDesc.Format = mTexture->GetDesc().Format;
-    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    srvDesc.Texture2D.MostDetailedMip = 0;
-    srvDesc.Texture2D.MipLevels = mTexture->GetDesc().MipLevels;
-    srvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+    // 이 버퍼가 단순 데이터 배열(Structured Buffer)임을 GPU에 알려주는 뷰(SRV)를 만듭니다.
+    D3D12_SHADER_RESOURCE_VIEW_DESC instSrvDesc = {};
+    instSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    instSrvDesc.Format = DXGI_FORMAT_UNKNOWN; // 구조체 배열은 UNKNOWN 포맷을 씁니다.
+    instSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+    instSrvDesc.Buffer.FirstElement = 0;
+    instSrvDesc.Buffer.NumElements = NumInstances; // 총 100개
+    instSrvDesc.Buffer.StructureByteStride = sizeof(InstanceData); // 구조체 1개당 크기
+    instSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
 
-    mDevice->CreateShaderResourceView(mTexture.Get(), &srvDesc, hDescriptor); // 마지막 칸에 장착!
+    mDevice->CreateShaderResourceView(mInstanceBuffer.Get(), &instSrvDesc, hDescriptor);
    
 
     return true; // 성공 반환

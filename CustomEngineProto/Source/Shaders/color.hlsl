@@ -5,8 +5,11 @@ cbuffer cbPass : register(b0)
 {
     float4x4 gViewProj; // 카메라의 View * Projection 행렬입니다.
     float3 gLightDir; // 공통 빛 방향입니다.
-    float pad;
+    // [추가점 시작] 시간과 카메라 위치를 받을 변수를 셰이더에도 똑같이 추가합니다! 
+    float gTotalTime; // 텍스처를 움직이게 만들 '현재 시간'입니다.
     float4 gLightColor; // 공통 빛 색상입니다.
+    float3 gEyePosW; // 스페큘러(반사광)를 계산하기 위한 '카메라의 현재 월드 위치'입니다.
+    float pad; // 16바이트 정렬을 맞추기 위한 빈칸입니다.
 }; 
 
 //[변경점 시작] 상수 버퍼(cbuffer)를 버리고, 거대한 데이터 배열(StructuredBuffer)을 사용합니다! 
@@ -41,6 +44,8 @@ struct VSInput
 struct PSInput
 { // PSInput 구조체 시작
     float4 Pos : SV_POSITION; // 화면상에 그려질 최종 2D 좌표 위치입니다. SV_POSITION은 시스템(SV)이 예약한 아주 중요한 키워드입니다.
+     //  [추가점 시작] 픽셀 셰이더에서 반사 각도를 계산하기 위해, 점의 '월드 공간 위치'를 하나 더 넘겨줍니다. 
+    float3 PosW : POSITION;
     float4 Color : COLOR; // 버텍스 셰이더에서 받아온 색상 정보를 그대로 픽셀 셰이더로 전달하기 위한 변수입니다.
     float3 NormalW : NORMAL; // --- 새롭게 추가됨: 월드 공간(World Space)으로 변환된 법선 벡터입니다. ---
     
@@ -52,7 +57,7 @@ PSInput VSMain(VSInput input)
 { // VSMain 함수 시작
     PSInput output; // 다음 단계(픽셀 셰이더)로 넘겨줄 출력용 빈 구조체를 하나 생성합니다.
     
-    //  [변경점 시작] 배열(gInstanceData)에서 자신의 인스턴스 번호(instanceID)에 맞는 월드 행렬을 쏙 빼옵니다!
+    //   배열(gInstanceData)에서 자신의 인스턴스 번호(instanceID)에 맞는 월드 행렬을 쏙 빼옵니다!
     float4x4 worldMat = gInstanceData[input.instanceID].World;
     
     // 1. 위치 변환: 지역 좌표에 1.0을 더해 4D로 만들고 최종 행렬을 곱해 화면 좌표로 변환합니다.
@@ -62,7 +67,8 @@ PSInput VSMain(VSInput input)
     
      //  누락되었던 핵심 곱셈! 먼저 점들을 월드 행렬을 이용해 3D 공간 각자의 위치(격자 배열)로 보냅니다! 
     posW = mul(posW, worldMat);
-    
+    //  [추가점 시작] 픽셀 셰이더에게 내 진짜 월드 위치(X,Y,Z)가 어디인지 알려줍니다. 
+    output.PosW = posW.xyz;
     // 이 정점의 위치에 CPU에서 넘겨준 3D 변환 행렬(gWorldViewProj)을 곱(mul)합니다!
     // 이 한 줄의 연산이 2D였던 폴리곤을 원근감이 적용된 3D 공간의 위치로 튕겨내 줍니다.
     output.Pos = mul(posW, gViewProj);
@@ -73,8 +79,9 @@ PSInput VSMain(VSInput input)
     // 정점이 가지고 있던 색상 데이터는 변형 없이 그대로 출력 구조체에 복사합니다.
     output.Color = input.Color;
     
-     // 정점의 UV 좌표를 그대로 픽셀 셰이더로 토스합니다.
-    output.TexC = input.TexC;
+  //  [변경점 시작] 마법의 UV 스크롤링! (텍스처 애니메이션) 
+    // 원래의 UV 좌표에 시간을 더해주면, 텍스처 이미지가 대각선으로 영원히 흘러가는 것처럼 보입니다!
+    output.TexC = input.TexC + float2(gTotalTime * 0.1f, gTotalTime * 0.1f);
     
     return output; // 위치와 색상이 채워진 결과물을 픽셀 셰이더로 반환하여 넘깁니다.
 } // VSMain 함수 끝
@@ -98,6 +105,27 @@ float4 PSMain(PSInput input) : SV_TARGET
     
     // 5. 난반사(Diffuse): 빛의 색상에 방금 구한 빛의 세기(ndotl)를 곱해줍니다.
     float3 diffuse = ndotl * gLightColor.rgb;
+    
+     //  [추가점 시작] 3. 정반사광(Specular): 빤딱거리는 광택(하이라이트)을 만듭니다! 
+    
+    // 픽셀 위치에서 카메라(눈)를 바라보는 방향 벡터(View Vector)를 구합니다.
+    // (내 눈의 위치) - (픽셀의 위치) = 픽셀에서 눈으로 향하는 화살표
+    float3 viewDir = normalize(gEyePosW - input.PosW);
+    
+    // 빛이 큐브 표면에 부딪혀서 튕겨 나가는 '반사 방향 벡터(Reflect Vector)'를 구합니다.
+    // (gLightDir는 들어오는 방향, n은 법선입니다.)
+    float3 reflectDir = reflect(normalize(gLightDir), n);
+    
+    // 내 눈이 바라보는 방향(viewDir)과 빛이 튕겨나가는 방향(reflectDir)이 일치할수록 눈부시게 빛납니다! (Dot 연산)
+    // pow(..., 32.0f)의 32는 광택의 '날카로움'을 의미합니다. 숫자가 클수록 당구공처럼 광택이 작고 쨍해집니다.
+    float specFactor = pow(max(dot(viewDir, reflectDir), 0.0f), 32.0f);
+    
+    // 최종 스페큘러 빛 = (눈부심 수치) * (빛의 색상) * (0.5는 물체의 거울 반사율 정도)
+    float3 specular = specFactor * gLightColor.rgb * 0.5f;
+    
+    
+    
+    
     
     // 6. 샘플러를 이용해 현재 픽셀 위치(TexC)에 해당하는 텍스처 색상을 뽑아옵니다.
     float4 texColor = gDiffuseMap.Sample(gsSamPointWrap, input.TexC);

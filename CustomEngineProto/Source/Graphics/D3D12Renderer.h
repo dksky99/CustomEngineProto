@@ -20,14 +20,15 @@ struct Vertex
     DirectX::XMFLOAT2 TexC;
 }; // Vertex 구조체 끝
 
-//  단 1개의 큐브를 위한 상수 버퍼가 아니라, 여러 개의 큐브(인스턴스) 데이터를 담을 수 있도록 수정합니다!
-// 1. 모든 큐브가 공유하는 전역 데이터 (카메라 뷰/프로젝션, 빛 정보)
+//  [변경점 시작] 셰이더와 통신할 공통(Pass) 상수 버퍼 구조체를 업데이트합니다! 
 struct PassConstants
 {
     DirectX::XMFLOAT4X4 ViewProj = { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f }; // V * P 행렬
     DirectX::XMFLOAT3 LightDir = { 0.577f, -0.577f, 0.577f }; // 공통 빛 방향
-    float padding = 0.0f; // 패딩
+    float TotalTime = 0.0f; // 추가 1: 텍스처 애니메이션을 위해 셰이더로 넘겨줄 '현재 누적 시간'
     DirectX::XMFLOAT4 LightColor = { 1.0f, 1.0f, 1.0f, 1.0f }; // 공통 빛 색상
+    DirectX::XMFLOAT3 EyePosW = { 0.0f, 0.0f, 0.0f }; // 추가 2: 스페큘러(반사) 계산을 위해 셰이더가 알아야 할 '현재 카메라의 3D 위치'
+    float padding = 0.0f; // 16바이트 정렬(Float4) 규칙을 맞추기 위해 빈칸(패딩) 1개를 추가합니다.
 };
 // CPU에서 계산한 행렬 데이터를 GPU(셰이더)로 넘겨주기 위한 상수 구조체입니다.
 // 2. 각각의 큐브(인스턴스)마다 다르게 가질 고유 데이터 (월드 위치/회전)

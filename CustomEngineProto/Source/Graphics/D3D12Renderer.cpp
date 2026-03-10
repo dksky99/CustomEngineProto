@@ -275,7 +275,9 @@ void D3D12Renderer::Update(float deltaTime)
     // 약간의 노을 느낌을 주기 위해 빨간색(R)은 유지하고 초록(G), 파랑(B) 값을 조금 깎아냅니다.
     passConstants.LightColor = { intensity, intensity * 0.9f, intensity * 0.8f, 1.0f };
 
-
+    //  [변경점 시작] C++ 코드는 이 두 줄만 추가되면 완벽합니다! 
+    passConstants.TotalTime = totalTime; // 현재 흐른 누적 시간을 셰이더에게 전달합니다. (UV를 움직일 때 사용)
+    passConstants.EyePosW = mCameraPos; // 현재 카메라가 위치한 월드 좌표를 셰이더에게 전달합니다. (스페큘러 계산에 필수)
 
 
 

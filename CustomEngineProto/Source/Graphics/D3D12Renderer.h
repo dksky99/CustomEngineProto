@@ -20,7 +20,7 @@ struct Vertex
     DirectX::XMFLOAT2 TexC;
 }; // Vertex 구조체 끝
 
-//  [변경점 시작] 셰이더와 통신할 공통(Pass) 상수 버퍼 구조체를 업데이트합니다! 
+//  [ ] 셰이더와 통신할 공통(Pass) 상수 버퍼 구조체를 업데이트합니다! 
 struct PassConstants
 {
     DirectX::XMFLOAT4X4 ViewProj = { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f }; // V * P 행렬

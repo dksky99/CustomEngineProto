@@ -5,14 +5,14 @@ cbuffer cbPass : register(b0)
 {
     float4x4 gViewProj; // 카메라의 View * Projection 행렬입니다.
     float3 gLightDir; // 공통 빛 방향입니다.
-    // [추가점 시작] 시간과 카메라 위치를 받을 변수를 셰이더에도 똑같이 추가합니다! 
+    // [ ] 시간과 카메라 위치를 받을 변수를 셰이더에도 똑같이 추가합니다! 
     float gTotalTime; // 텍스처를 움직이게 만들 '현재 시간'입니다.
     float4 gLightColor; // 공통 빛 색상입니다.
     float3 gEyePosW; // 스페큘러(반사광)를 계산하기 위한 '카메라의 현재 월드 위치'입니다.
     float pad; // 16바이트 정렬을 맞추기 위한 빈칸입니다.
 }; 
 
-//[변경점 시작] 상수 버퍼(cbuffer)를 버리고, 거대한 데이터 배열(StructuredBuffer)을 사용합니다! 
+//[ ] 상수 버퍼(cbuffer)를 버리고, 거대한 데이터 배열(StructuredBuffer)을 사용합니다! 
 // 큐브 하나가 가질 데이터를 구조체로 정의합니다.
 struct InstanceData
 {
@@ -36,7 +36,7 @@ struct VSInput
      // C++에서 넘겨줄 텍스처 UV 좌표(2D)를 추가합니다.
     float2 TexC : TEXCOORD;
     
-     //  [변경점 시작] GPU가 "지금 내가 몇 번째 큐브를 그리고 있지?"를 알 수 있게 해주는 마법의 시스템 변수입니다.
+     //  [ ] GPU가 "지금 내가 몇 번째 큐브를 그리고 있지?"를 알 수 있게 해주는 마법의 시스템 변수입니다.
     uint instanceID : SV_InstanceID;
 }; // VSInput 구조체 끝
 
@@ -44,7 +44,7 @@ struct VSInput
 struct PSInput
 { // PSInput 구조체 시작
     float4 Pos : SV_POSITION; // 화면상에 그려질 최종 2D 좌표 위치입니다. SV_POSITION은 시스템(SV)이 예약한 아주 중요한 키워드입니다.
-     //  [추가점 시작] 픽셀 셰이더에서 반사 각도를 계산하기 위해, 점의 '월드 공간 위치'를 하나 더 넘겨줍니다. 
+     //  [ ] 픽셀 셰이더에서 반사 각도를 계산하기 위해, 점의 '월드 공간 위치'를 하나 더 넘겨줍니다. 
     float3 PosW : POSITION;
     float4 Color : COLOR; // 버텍스 셰이더에서 받아온 색상 정보를 그대로 픽셀 셰이더로 전달하기 위한 변수입니다.
     float3 NormalW : NORMAL; // --- 새롭게 추가됨: 월드 공간(World Space)으로 변환된 법선 벡터입니다. ---
@@ -67,7 +67,7 @@ PSInput VSMain(VSInput input)
     
      //  누락되었던 핵심 곱셈! 먼저 점들을 월드 행렬을 이용해 3D 공간 각자의 위치(격자 배열)로 보냅니다! 
     posW = mul(posW, worldMat);
-    //  [추가점 시작] 픽셀 셰이더에게 내 진짜 월드 위치(X,Y,Z)가 어디인지 알려줍니다. 
+    //  [ ] 픽셀 셰이더에게 내 진짜 월드 위치(X,Y,Z)가 어디인지 알려줍니다. 
     output.PosW = posW.xyz;
     // 이 정점의 위치에 CPU에서 넘겨준 3D 변환 행렬(gWorldViewProj)을 곱(mul)합니다!
     // 이 한 줄의 연산이 2D였던 폴리곤을 원근감이 적용된 3D 공간의 위치로 튕겨내 줍니다.
@@ -79,7 +79,7 @@ PSInput VSMain(VSInput input)
     // 정점이 가지고 있던 색상 데이터는 변형 없이 그대로 출력 구조체에 복사합니다.
     output.Color = input.Color;
     
-  //  [변경점 시작] 마법의 UV 스크롤링! (텍스처 애니메이션) 
+  //  [ ] 마법의 UV 스크롤링! (텍스처 애니메이션) 
     // 원래의 UV 좌표에 시간을 더해주면, 텍스처 이미지가 대각선으로 영원히 흘러가는 것처럼 보입니다!
     output.TexC = input.TexC + float2(gTotalTime * 0.1f, gTotalTime * 0.1f);
     
@@ -94,11 +94,9 @@ float4 PSMain(PSInput input) : SV_TARGET
     // 6. 샘플러를 이용해 현재 픽셀 위치(TexC)에 해당하는 텍스처 색상을 뽑아옵니다.
     float4 texColor = gDiffuseMap.Sample(gsSamPointWrap, input.TexC);
     
-     // [추가점 시작] 알파 테스팅 (Alpha Testing) 마법의 한 줄! 
-    // 텍스처의 알파(투명도, a) 값이 0.1보다 작다면(즉, 투명한 픽셀이라면)
-    // 뒤에 있는 조명 연산이고 뭐고 다 때려치우고 이 픽셀의 렌더링을 완전히 '취소(discard)'해버립니다!
-    // 이렇게 하면 이 픽셀은 Z-버퍼에도 기록되지 않고, 그 자리에 원래 있던 배경색이나 뒤의 물체가 그대로 보이게 됩니다.
-    clip(texColor.a - 0.1f); // clip() 함수는 괄호 안의 값이 0 미만이면 discard를 수행합니다.
+    // [ ] 알파 테스팅 코드를 삭제합니다! 
+    // 이제는 픽셀을 버리지 않고 뒤의 색상과 반투명하게 섞을 것이기 때문에 clip() 함수가 필요 없습니다.
+    // clip(texColor.a - 0.1f); // <-- 주석 처리하거나 삭제합니다.
     
     
      // 1. 법선 정규화: 보간되는 과정에서 길이가 변했을 수 있으므로, 화살표의 길이를 다시 1로(Normalize) 맞춰줍니다.
@@ -117,7 +115,7 @@ float4 PSMain(PSInput input) : SV_TARGET
     // 5. 난반사(Diffuse): 빛의 색상에 방금 구한 빛의 세기(ndotl)를 곱해줍니다.
     float3 diffuse = ndotl * gLightColor.rgb;
     
-     //  [추가점 시작] 3. 정반사광(Specular): 빤딱거리는 광택(하이라이트)을 만듭니다! 
+     //  [ ] 3. 정반사광(Specular): 빤딱거리는 광택(하이라이트)을 만듭니다! 
     
     // 픽셀 위치에서 카메라(눈)를 바라보는 방향 벡터(View Vector)를 구합니다.
     // (내 눈의 위치) - (픽셀의 위치) = 픽셀에서 눈으로 향하는 화살표
@@ -144,8 +142,8 @@ float4 PSMain(PSInput input) : SV_TARGET
     
     
     
-    // 버텍스 셰이더에서 넘겨준 색상(Color) 값을 그대로 최종 픽셀의 색상으로 결정하여 반환합니다.
-    // (이 과정에서 삼각형의 세 꼭짓점 색상이 다를 경우, 중간 픽셀들은 자동으로 자연스럽게 섞인(Interpolated) 색상이 됩니다)
-    return float4(finalColor, 1.0f);
+   //  [변경점 시작 5] 투명도 값을 포함하여 렌더 타겟에 반환합니다! 
+    // 이 픽셀의 투명도(a)를 파이프라인(PSO)의 블렌더에게 넘겨주어 배경과 섞이게 만듭니다.
+    return float4(finalColor, texColor.a);
 
 } // PSMain 함수 끝

@@ -275,7 +275,7 @@ void D3D12Renderer::Update(float deltaTime)
     // 약간의 노을 느낌을 주기 위해 빨간색(R)은 유지하고 초록(G), 파랑(B) 값을 조금 깎아냅니다.
     passConstants.LightColor = { intensity, intensity * 0.9f, intensity * 0.8f, 1.0f };
 
-    //  [변경점 시작] C++ 코드는 이 두 줄만 추가되면 완벽합니다! 
+    //  [ ] C++ 코드는 이 두 줄만 추가되면 완벽합니다! 
     passConstants.TotalTime = totalTime; // 현재 흐른 누적 시간을 셰이더에게 전달합니다. (UV를 움직일 때 사용)
     passConstants.EyePosW = mCameraPos; // 현재 카메라가 위치한 월드 좌표를 셰이더에게 전달합니다. (스페큘러 계산에 필수)
 
@@ -498,11 +498,36 @@ bool D3D12Renderer::BuildPSO() // PSO 구축
     psoDesc.VS = { reinterpret_cast<BYTE*>(vertexShader->GetBufferPointer()), vertexShader->GetBufferSize() };
     psoDesc.PS = { reinterpret_cast<BYTE*>(pixelShader->GetBufferPointer()), pixelShader->GetBufferSize() };
     psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
-    // --- 파이프라인 깊이 및 컬링 상태 업데이트 ---
-    // 이제 깊이 버퍼가 생겼으므로, 뒷면(Back)을 그리지 않도록 최적화(Culling)를 다시 켭니다!
-    psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
+   
+    // [변경점 시작 1] 유리창처럼 뒷면도 보이게 하기 위해 뒷면 가리기(Culling)를 끕니다! 
+    // 반투명한 물체는 뒷면도 비쳐 보여야 현실감이 납니다.
+    psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE; // 기본값인 BACK에서 NONE으로 변경
+    // [변경점 시작 2] 반투명 효과의 핵심! 블렌딩 상태(BlendState)를 설정합니다. 
+    D3D12_BLEND_DESC blendDesc = CD3DX12_BLEND_DESC(D3D12_DEFAULT); // 기본 블렌드 구조체를 가져옵니다.
 
-    psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+    // 첫 번째 렌더 타겟(우리의 도화지)에 대한 블렌딩 옵션을 활성화합니다.
+    blendDesc.RenderTarget[0].BlendEnable = TRUE;
+
+    // 이 물체의 픽셀(Source)이 가진 알파(투명도) 비율만큼 색상을 사용하겠다고 설정합니다. (SrcAlpha)
+    blendDesc.RenderTarget[0].SrcBlend = D3D12_BLEND_SRC_ALPHA;
+
+    // 이미 도화지에 그려진 픽셀(Destination)은 (1 - Source의 알파) 비율만큼 섞겠다고 설정합니다. (InvSrcAlpha)
+    blendDesc.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+
+    // 두 색상을 섞을 때 덧셈(+) 연산을 사용합니다.
+    blendDesc.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+
+    // 알파 채널(투명도 자체)을 섞는 방식입니다. (여기서는 물체의 투명도(1)와 배경의 투명도(0)를 더합니다)
+    blendDesc.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+    blendDesc.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_ZERO;
+    blendDesc.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+
+    // 설정한 블렌드 상태를 파이프라인에 적용합니다!
+    psoDesc.BlendState = blendDesc;
+
+
+
+
 
     // 깊이 버퍼(Z-Buffer) 검사를 수행하도록 활성화합니다.
     psoDesc.DepthStencilState.DepthEnable = TRUE;
@@ -735,9 +760,9 @@ bool D3D12Renderer::BuildTexture()
             textureData[index + 1] = color;     // G
             textureData[index + 2] = 255;       // B (푸른빛을 살짝 섞어서 세련되게 만듭니다)
 
-            // [변경점 시작] 텍스처의 알파(A) 채널 값을 조작합니다! 
-           // 원래는 모두 255(완전 불투명)였지만, 이제 '흰색 칸은 255(불투명)', '회색 칸은 0(완전 투명)'으로 알파 값을 다르게 줍니다.
-            textureData[index + 3] = isWhite ? 255 : 0;
+            //  [변경점 시작 3] 텍스처의 알파(A) 값을 반투명하게 조절합니다! 
+             // 흰색 칸은 70% 정도 불투명하게(180), 회색 칸은 20% 정도만 불투명하게(50) 설정해 봅니다.
+            textureData[index + 3] = isWhite ? 180 : 50;
         }
     }
 

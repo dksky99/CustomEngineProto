@@ -734,7 +734,10 @@ bool D3D12Renderer::BuildTexture()
             textureData[index + 0] = color;     // R
             textureData[index + 1] = color;     // G
             textureData[index + 2] = 255;       // B (푸른빛을 살짝 섞어서 세련되게 만듭니다)
-            textureData[index + 3] = 255;       // A
+
+            // [변경점 시작] 텍스처의 알파(A) 채널 값을 조작합니다! 
+           // 원래는 모두 255(완전 불투명)였지만, 이제 '흰색 칸은 255(불투명)', '회색 칸은 0(완전 투명)'으로 알파 값을 다르게 줍니다.
+            textureData[index + 3] = isWhite ? 255 : 0;
         }
     }
 

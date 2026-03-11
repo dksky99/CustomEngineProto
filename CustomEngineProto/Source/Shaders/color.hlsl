@@ -90,6 +90,17 @@ PSInput VSMain(VSInput input)
 // SV_TARGET 키워드는 반환되는 색상 값이 우리가 만든 렌더 타겟 뷰(RTV, 현재 화면)에 칠해져야 함을 의미합니다.
 float4 PSMain(PSInput input) : SV_TARGET
 { // PSMain 함수 시작
+    
+    // 6. 샘플러를 이용해 현재 픽셀 위치(TexC)에 해당하는 텍스처 색상을 뽑아옵니다.
+    float4 texColor = gDiffuseMap.Sample(gsSamPointWrap, input.TexC);
+    
+     // [추가점 시작] 알파 테스팅 (Alpha Testing) 마법의 한 줄! 
+    // 텍스처의 알파(투명도, a) 값이 0.1보다 작다면(즉, 투명한 픽셀이라면)
+    // 뒤에 있는 조명 연산이고 뭐고 다 때려치우고 이 픽셀의 렌더링을 완전히 '취소(discard)'해버립니다!
+    // 이렇게 하면 이 픽셀은 Z-버퍼에도 기록되지 않고, 그 자리에 원래 있던 배경색이나 뒤의 물체가 그대로 보이게 됩니다.
+    clip(texColor.a - 0.1f); // clip() 함수는 괄호 안의 값이 0 미만이면 discard를 수행합니다.
+    
+    
      // 1. 법선 정규화: 보간되는 과정에서 길이가 변했을 수 있으므로, 화살표의 길이를 다시 1로(Normalize) 맞춰줍니다.
     float3 n = normalize(input.NormalW);
     
@@ -127,8 +138,6 @@ float4 PSMain(PSInput input) : SV_TARGET
     
     
     
-    // 6. 샘플러를 이용해 현재 픽셀 위치(TexC)에 해당하는 텍스처 색상을 뽑아옵니다.
-    float4 texColor = gDiffuseMap.Sample(gsSamPointWrap, input.TexC);
     
     // 7. 뽑아온 텍스처 색상에 빛(조명)을 곱해서 최종 색상을 만듭니다!
     float3 finalColor = texColor.rgb * (ambient + diffuse);

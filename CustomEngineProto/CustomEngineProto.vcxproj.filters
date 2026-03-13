@@ -17,6 +17,7 @@
   <ItemGroup>
     <None Include="packages.config" />
     <None Include="Source\Shaders\color.hlsl" />
+    <None Include="Source\Shaders\postprocess.hlsl" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Source\main.cpp">

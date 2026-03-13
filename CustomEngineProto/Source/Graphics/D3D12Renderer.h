@@ -86,6 +86,13 @@ private:
     // C++에서 직접 체크무늬 이미지를 만들어 GPU로 올리는 함수입니다.
     bool BuildTexture();
 
+    // [변경점 시작] 임시 도화지(Off-screen Render Target)를 만드는 함수를 추가합니다. 
+    bool BuildOffscreenRenderTarget(); // 모니터 대신 그림을 그릴 임시 메모리 텍스처를 생성하는 함수입니다.
+
+    //   [14단계 추가] 포스트 프로세싱용 두 번째 파이프라인(PSO)을 조립하는 함수입니다.  
+    bool BuildPostProcessPipeline(); // 필터를 먹이는 공장 라인을 만듭니다.
+    //   =========================================================================  
+
 private: // 클래스 내부에서만 접근 가능한 그래픽스 인터페이스 객체들입니다.
     ComPtr<IDXGIFactory4> mDxgiFactory; // 스왑 체인을 생성하고 하드웨어 어댑터를 열거할 DXGI 팩토리 객체입니다.
     ComPtr<ID3D12Device> mDevice; // GPU를 대표하며 리소스를 생성하는 핵심 D3D12 디바이스 객체입니다.
@@ -109,6 +116,16 @@ private: // 클래스 내부에서만 접근 가능한 그래픽스 인터페이스 객체들입니다.
     ComPtr<ID3D12DescriptorHeap> mRtvHeap; // 렌더 타겟 뷰(RTV)들을 저장할 서랍장(디스크립터 힙) 객체입니다.
     UINT mRtvDescriptorSize; // 현재 GPU에서 RTV 디스크립터 한 개가 차지하는 메모리 크기(바이트)를 구하여 저장해둡니다.
     int mCurrBackBuffer = 0; // 현재 화면 뒤에서 몰래 그림을 그리고 있는 백 버퍼의 인덱스(0 또는 1)를 추적합니다.
+
+    //  [변경점 시작] 임시 도화지 자원들을 선언합니다. 
+    ComPtr<ID3D12Resource> mOffscreenTex; // 그림을 몰래 렌더링해둘 고화질의 임시 텍스처 메모리 공간입니다.
+    ComPtr<ID3D12DescriptorHeap> mOffscreenRtvHeap; // 임시 도화지 전용의 렌더 타겟 안경(RTV)을 담을 서랍장입니다.
+
+    //   [14단계 추가] 포스트 프로세싱 전용 계약서와 파이프라인 객체를 추가합니다!  
+    ComPtr<ID3D12RootSignature> mPostRootSignature; // 포스트 프로세스 전용 계약서 (텍스처 1개만 받음)
+    ComPtr<ID3D12PipelineState> mPostPSO; // 포스트 프로세스 전용 공장 라인
+    //   =========================================================================  
+
 
     ComPtr<ID3D12Fence> mFence; // CPU와 GPU의 작업 완료 타이밍을 맞추기 위한 동기화 객체(울타리)입니다.
     UINT64 mCurrentFence = 0; // 현재 CPU가 GPU에게 발급한 대기표(펜스 값) 번호를 저장합니다.

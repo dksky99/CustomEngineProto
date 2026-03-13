@@ -52,6 +52,15 @@ struct PSInput
     float2 TexC : TEXCOORD; // 버텍스 셰이더에서 픽셀 셰이더로 넘겨줄 UV 좌표입니다.
 }; // PSInput 구조체 끝
 
+// [ ] 포스트 프로세싱을 위한 픽셀 셰이더 출력 구조체를 만듭니다! 
+// 지금은 렌더 타겟이 1개(모니터 화면)뿐이지만, 나중에 렌더 타겟을 여러 개(MRT)로 늘리거나
+// 포스트 프로세싱을 할 때 이 구조체가 아주 요긴하게 쓰입니다.
+struct PSOutput
+{
+    float4 Color : SV_TARGET0; // 첫 번째 렌더 타겟(우리의 메인 도화지)에 출력될 색상입니다.
+};
+
+
 // 1. 버텍스 셰이더의 메인 함수입니다. (각각의 꼭짓점마다 한 번씩 실행됩니다)
 PSInput VSMain(VSInput input)
 { // VSMain 함수 시작
@@ -88,62 +97,46 @@ PSInput VSMain(VSInput input)
 
 // 2. 픽셀 셰이더의 메인 함수입니다. (삼각형 내부를 채우는 모든 픽셀마다 한 번씩 엄청나게 많이 실행됩니다)
 // SV_TARGET 키워드는 반환되는 색상 값이 우리가 만든 렌더 타겟 뷰(RTV, 현재 화면)에 칠해져야 함을 의미합니다.
-float4 PSMain(PSInput input) : SV_TARGET
+//  [ ] 픽셀 셰이더의 반환 타입을 구조체(PSOutput)로 변경합니다. 
+PSOutput PSMain(PSInput input) : SV_TARGET
 { // PSMain 함수 시작
-    
-    // 6. 샘플러를 이용해 현재 픽셀 위치(TexC)에 해당하는 텍스처 색상을 뽑아옵니다.
+    PSOutput output; // 결과를 담을 빈 출력 구조체를 만듭니다.
+
     float4 texColor = gDiffuseMap.Sample(gsSamPointWrap, input.TexC);
-    
-    // [ ] 알파 테스팅 코드를 삭제합니다! 
+
+    // 알파 테스팅 코드를 삭제합니다! 
     // 이제는 픽셀을 버리지 않고 뒤의 색상과 반투명하게 섞을 것이기 때문에 clip() 함수가 필요 없습니다.
-    // clip(texColor.a - 0.1f); // <-- 주석 처리하거나 삭제합니다.
+    // clip(texColor.a - 0.1f); // <-- 11단계에서 제거되었음
+
+    // [최적화 & 개선] 빛 계산 공식을 조금 더 게임 엔진스럽게 다듬습니다! 
+    float3 normal = normalize(input.NormalW);
+    float3 lightVec = normalize(-gLightDir); // 빛이 뻗어나가는 방향
+    float3 viewVec = normalize(gEyePosW - input.PosW); // 내 눈이 바라보는 방향
     
+    // 1. 환경광 (Ambient) - 기본 밝기
+    float3 ambient = gLightColor.rgb * 0.2f;
     
-     // 1. 법선 정규화: 보간되는 과정에서 길이가 변했을 수 있으므로, 화살표의 길이를 다시 1로(Normalize) 맞춰줍니다.
-    float3 n = normalize(input.NormalW);
+    // 2. 난반사광 (Diffuse) - 표면의 거친 정도 (Lambert)
+    // saturate는 0~1 사이로 값을 제한하는 함수입니다. max(..., 0.0f)보다 빠릅니다.
+    float diffuseFactor = saturate(dot(normal, lightVec));
+    float3 diffuse = diffuseFactor * gLightColor.rgb;
     
-    // 2. 빛의 방향 반전: 빛이 표면으로 '들어오는' 방향을, 표면에서 빛을 향해 '뻗어나가는' 방향으로 뒤집어줍니다. (-gLightDir)
-    float3 l = normalize(-gLightDir);
+    // 3. 정반사광 (Specular) - 표면의 매끄러운 정도 (Blinn-Phong)
+    // reflect를 쓰는 대신 하프 벡터(Half Vector)를 사용하는 방식이 더 가볍고 널리 쓰입니다.
+    float3 halfVec = normalize(lightVec + viewVec); // 빛과 눈의 중간 벡터
+    float specFactor = pow(saturate(dot(normal, halfVec)), 64.0f); // 64: 광택의 선명도
     
-    // 3. 내적(Dot Product) 계산: 법선(n)과 빛 방향(l)의 각도를 내적하여 얼만큼 빛을 정면으로 받는지(0.0 ~ 1.0) 계산합니다.
-    // 각도가 90도를 넘어가면 음수가 되므로, max 함수를 써서 최소 0.0(그림자)으로 컷오프 해줍니다.
-    float ndotl = max(dot(n, l), 0.0f);
+    // 빛이 아예 안 닿는 곳(diffuseFactor == 0)에는 광택(Specular)도 생기면 안 됩니다!
+    float3 specular = (diffuseFactor > 0.0f) ? (specFactor * gLightColor.rgb * 0.5f) : float3(0.0f, 0.0f, 0.0f);
+
+    // 최종 색상 조합!
+    float3 finalColor = (texColor.rgb * (ambient + diffuse)) + specular;
     
-    // 4. 환경광(Ambient): 빛을 직접 받지 못하는 곳도 완전히 새까맣게 타버리지 않도록 최소한의 밝기(20%)를 줍니다.
-    float3 ambient = float3(0.2f, 0.2f, 0.2f);
+     // 계산된 최종 색상을 출력 구조체에 담습니다. (알파 값은 텍스처의 알파 유지)
+    output.Color = float4(finalColor, texColor.a);
     
-    // 5. 난반사(Diffuse): 빛의 색상에 방금 구한 빛의 세기(ndotl)를 곱해줍니다.
-    float3 diffuse = ndotl * gLightColor.rgb;
-    
-     //  [ ] 3. 정반사광(Specular): 빤딱거리는 광택(하이라이트)을 만듭니다! 
-    
-    // 픽셀 위치에서 카메라(눈)를 바라보는 방향 벡터(View Vector)를 구합니다.
-    // (내 눈의 위치) - (픽셀의 위치) = 픽셀에서 눈으로 향하는 화살표
-    float3 viewDir = normalize(gEyePosW - input.PosW);
-    
-    // 빛이 큐브 표면에 부딪혀서 튕겨 나가는 '반사 방향 벡터(Reflect Vector)'를 구합니다.
-    // (gLightDir는 들어오는 방향, n은 법선입니다.)
-    float3 reflectDir = reflect(normalize(gLightDir), n);
-    
-    // 내 눈이 바라보는 방향(viewDir)과 빛이 튕겨나가는 방향(reflectDir)이 일치할수록 눈부시게 빛납니다! (Dot 연산)
-    // pow(..., 32.0f)의 32는 광택의 '날카로움'을 의미합니다. 숫자가 클수록 당구공처럼 광택이 작고 쨍해집니다.
-    float specFactor = pow(max(dot(viewDir, reflectDir), 0.0f), 32.0f);
-    
-    // 최종 스페큘러 빛 = (눈부심 수치) * (빛의 색상) * (0.5는 물체의 거울 반사율 정도)
-    float3 specular = specFactor * gLightColor.rgb * 0.5f;
-    
-    
-    
-    
-    
-    
-    // 7. 뽑아온 텍스처 색상에 빛(조명)을 곱해서 최종 색상을 만듭니다!
-    float3 finalColor = texColor.rgb * (ambient + diffuse);
-    
-    
-    
-   //  [변경점 시작 5] 투명도 값을 포함하여 렌더 타겟에 반환합니다! 
+   //  [  5] 투명도 값을 포함하여 렌더 타겟에 반환합니다! 
     // 이 픽셀의 투명도(a)를 파이프라인(PSO)의 블렌더에게 넘겨주어 배경과 섞이게 만듭니다.
-    return float4(finalColor, texColor.a);
+    return output;
 
 } // PSMain 함수 끝

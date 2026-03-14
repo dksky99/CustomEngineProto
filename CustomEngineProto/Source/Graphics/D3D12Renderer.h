@@ -130,6 +130,10 @@ private: // 클래스 내부에서만 접근 가능한 그래픽스 인터페이스 객체들입니다.
     ComPtr<ID3D12RootSignature> mPostRootSignature; // 포스트 프로세스 전용 계약서 (텍스처 1개만 받음)
     ComPtr<ID3D12PipelineState> mPsoGrayscale;
     ComPtr<ID3D12PipelineState> mPsoCRT;
+    //  [변경점] 블룸 효과를 위한 2개의 파이프라인 변수로 이름을 변경했습니다. 
+    ComPtr<ID3D12PipelineState> mPsoBrightBlur; // 빛을 추출하고 뭉개는 파이프라인입니다.
+    ComPtr<ID3D12PipelineState> mPsoComposite; // 두 화면을 덧셈 합성하는 파이프라인입니다.
+
     //   =========================================================================  
 
 

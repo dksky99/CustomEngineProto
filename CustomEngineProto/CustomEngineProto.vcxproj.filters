@@ -18,6 +18,9 @@
     <None Include="packages.config" />
     <None Include="Source\Shaders\color.hlsl" />
     <None Include="Source\Shaders\postprocess.hlsl" />
+    <None Include="Source\Shaders\PP_CRT.hlsl" />
+    <None Include="Source\Shaders\PP_Grayscale.hlsl" />
+    <None Include="Source\Shaders\ScreenQuadVS.hlsl" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Source\main.cpp">

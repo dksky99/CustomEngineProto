@@ -87,12 +87,15 @@ private:
     bool BuildTexture();
 
     // [변경점 시작] 임시 도화지(Off-screen Render Target)를 만드는 함수를 추가합니다. 
-    bool BuildOffscreenRenderTarget(); // 모니터 대신 그림을 그릴 임시 메모리 텍스처를 생성하는 함수입니다.
+    bool BuildOffscreenRenderTargets(); // 모니터 대신 그림을 그릴 임시 메모리 텍스처를 생성하는 함수입니다.
 
     //   [14단계 추가] 포스트 프로세싱용 두 번째 파이프라인(PSO)을 조립하는 함수입니다.  
-    bool BuildPostProcessPipeline(); // 필터를 먹이는 공장 라인을 만듭니다.
+    bool BuildPostProcessPipelines(); // 필터를 먹이는 공장 라인을 만듭니다.
     //   =========================================================================  
-
+     //   [구조 분화] 복잡했던 Draw 함수를 역할에 맞게 엔진처럼 나눕니다.  
+    void RenderScene(); // 3D 모델(큐브)들을 그리는 단계
+    void RenderPostProcess(); // 2D 필터(포스트 프로세스)를 체인으로 연결하여 그리는 단계
+    //   =========================================================================  
 private: // 클래스 내부에서만 접근 가능한 그래픽스 인터페이스 객체들입니다.
     ComPtr<IDXGIFactory4> mDxgiFactory; // 스왑 체인을 생성하고 하드웨어 어댑터를 열거할 DXGI 팩토리 객체입니다.
     ComPtr<ID3D12Device> mDevice; // GPU를 대표하며 리소스를 생성하는 핵심 D3D12 디바이스 객체입니다.
@@ -117,13 +120,16 @@ private: // 클래스 내부에서만 접근 가능한 그래픽스 인터페이스 객체들입니다.
     UINT mRtvDescriptorSize; // 현재 GPU에서 RTV 디스크립터 한 개가 차지하는 메모리 크기(바이트)를 구하여 저장해둡니다.
     int mCurrBackBuffer = 0; // 현재 화면 뒤에서 몰래 그림을 그리고 있는 백 버퍼의 인덱스(0 또는 1)를 추적합니다.
 
-    //  [변경점 시작] 임시 도화지 자원들을 선언합니다. 
-    ComPtr<ID3D12Resource> mOffscreenTex; // 그림을 몰래 렌더링해둘 고화질의 임시 텍스처 메모리 공간입니다.
+    //   [구조 분화] 핑퐁 렌더링을 위해 임시 도화지 배열 크기를 2로 늘립니다.  
+    static const int OffscreenBufferCount = 2;
+    ComPtr<ID3D12Resource> mOffscreenTex[OffscreenBufferCount];// 그림을 몰래 렌더링해둘 고화질의 임시 텍스처 메모리 공간입니다.
     ComPtr<ID3D12DescriptorHeap> mOffscreenRtvHeap; // 임시 도화지 전용의 렌더 타겟 안경(RTV)을 담을 서랍장입니다.
+
 
     //   [14단계 추가] 포스트 프로세싱 전용 계약서와 파이프라인 객체를 추가합니다!  
     ComPtr<ID3D12RootSignature> mPostRootSignature; // 포스트 프로세스 전용 계약서 (텍스처 1개만 받음)
-    ComPtr<ID3D12PipelineState> mPostPSO; // 포스트 프로세스 전용 공장 라인
+    ComPtr<ID3D12PipelineState> mPsoGrayscale;
+    ComPtr<ID3D12PipelineState> mPsoCRT;
     //   =========================================================================  
 
 

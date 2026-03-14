@@ -189,14 +189,12 @@ bool D3D12Renderer::Initialize(HWND hwnd, int width, int height) // DX12 초기화 
     // 기하학 데이터를 세팅하기 전에, 텍스처 이미지를 먼저 생성해서 메모리에 올려줍니다!
     if (!BuildTexture()) return false;
     if (!BuildGeometry()) return false;      // 3. 기하학(버텍스+인덱스) 데이터 세팅
-    //   [14단계 중요 수정] 초기화 순서 변경!  
-   // 공용 서랍장(BuildConstantBuffers)을 만들기 전에 임시 도화지(Offscreen)가 먼저 존재해야 합니다.
-   // 그래야 서랍장의 4번째 칸에 임시 도화지를 끼워 넣을 수 있기 때문입니다.
-    if (!BuildOffscreenRenderTarget()) return false; // 1. 임시 도화지 먼저 생성!
-    if (!BuildConstantBuffers()) return false; // 2. 그 다음 서랍장 생성 및 도화지 끼워넣기!
 
-    // 마지막으로 포스트 프로세스 전용 파이프라인(PSO)을 조립합니다!
-    if (!BuildPostProcessPipeline()) return false; // 3. 필터 전용 파이프라인 생성!
+    //   [구조 분화] 변경된 초기화 함수들을 호출합니다.  
+    if (!BuildOffscreenRenderTargets()) return false;
+    if (!BuildConstantBuffers()) return false;
+    if (!BuildPostProcessPipelines()) return false;
+    //   =========================================================================  
     //   =========================================================================  
 
 
@@ -309,106 +307,19 @@ void D3D12Renderer::Update(float deltaTime)
     }
 }
 
-// 매 프레임마다 화면을 렌더링하는 함수의 구현부입니다.
+//   [구조 분화] 엔진의 메인 Draw 함수가 구조적으로 매우 깔끔해졌습니다!  
 void D3D12Renderer::Draw()
 {
     mCommandAllocator->Reset();
-
-    // ========================================================================
-    //   [Pass 1: 임시 도화지에 100개의 큐브 숲 그리기]  
-    // ========================================================================
     mCommandList->Reset(mCommandAllocator.Get(), mPSO.Get());
 
-    CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
-        mOffscreenTex.Get(),
-        D3D12_RESOURCE_STATE_GENERIC_READ,
-        D3D12_RESOURCE_STATE_RENDER_TARGET
-    );
-    mCommandList->ResourceBarrier(1, &barrier);
+    // 1. 3D 씬을 임시 도화지(Ping)에 렌더링합니다.
+    RenderScene();
 
-    CD3DX12_CPU_DESCRIPTOR_HANDLE offscreenRtv(mOffscreenRtvHeap->GetCPUDescriptorHandleForHeapStart());
-    CD3DX12_CPU_DESCRIPTOR_HANDLE dsvHandle(mDsvHeap->GetCPUDescriptorHandleForHeapStart());
+    // 2. 임시 도화지를 재료로 삼아 2D 필터(포스트 프로세스 체인)를 적용합니다.
+    RenderPostProcess();
 
-    const float clearColor[] = { 0.39f, 0.58f, 0.93f, 1.0f };
-    mCommandList->ClearRenderTargetView(offscreenRtv, clearColor, 0, nullptr);
-    mCommandList->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, nullptr);
-
-    mCommandList->OMSetRenderTargets(1, &offscreenRtv, FALSE, &dsvHandle);
-    mCommandList->RSSetViewports(1, &mViewport);
-    mCommandList->RSSetScissorRects(1, &mScissorRect);
-
-    ID3D12DescriptorHeap* descriptorHeaps[] = { mCbvHeap.Get() };
-    mCommandList->SetDescriptorHeaps(_countof(descriptorHeaps), descriptorHeaps);
-
-    mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
-
-    CD3DX12_GPU_DESCRIPTOR_HANDLE heapStart(mCbvHeap->GetGPUDescriptorHandleForHeapStart());
-
-    CD3DX12_GPU_DESCRIPTOR_HANDLE passCbvHandle(heapStart, 0, mCbvSrvUavDescriptorSize);
-    mCommandList->SetGraphicsRootDescriptorTable(0, passCbvHandle);
-
-    CD3DX12_GPU_DESCRIPTOR_HANDLE texSrvHandle(heapStart, 1, mCbvSrvUavDescriptorSize);
-    mCommandList->SetGraphicsRootDescriptorTable(1, texSrvHandle);
-
-    CD3DX12_GPU_DESCRIPTOR_HANDLE instSrvHandle(heapStart, 2, mCbvSrvUavDescriptorSize);
-    mCommandList->SetGraphicsRootDescriptorTable(2, instSrvHandle);
-
-    mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    mCommandList->IASetVertexBuffers(0, 1, &mVertexBufferView);
-    mCommandList->IASetIndexBuffer(&mIndexBufferView);
-
-    mCommandList->DrawIndexedInstanced(mIndexCount, NumInstances, 0, 0, 0);
-
-    // 임시 도화지(mOffscreenTex)에 그림을 다 그렸으므로 다시 READ 상태로 돌려놓습니다!
-    barrier = CD3DX12_RESOURCE_BARRIER::Transition(
-        mOffscreenTex.Get(),
-        D3D12_RESOURCE_STATE_RENDER_TARGET,
-        D3D12_RESOURCE_STATE_GENERIC_READ
-    );
-    mCommandList->ResourceBarrier(1, &barrier);
-
-    // ========================================================================
-    //   [Pass 2: 진짜 모니터 화면에 필터(포스트 프로세스) 먹인 그림 그리기]  
-    // ========================================================================
-
-    // 1. 드디어 실제 모니터 버퍼(스왑 체인)를 타겟으로 지정합니다!
-    barrier = CD3DX12_RESOURCE_BARRIER::Transition(
-        mSwapChainBuffer[mCurrBackBuffer].Get(), // 대상: 모니터 버퍼
-        D3D12_RESOURCE_STATE_PRESENT,            // 이전: 화면 출력 상태
-        D3D12_RESOURCE_STATE_RENDER_TARGET       // 이후: 그림 그리기 상태
-    );
-    mCommandList->ResourceBarrier(1, &barrier); // 상태 변경 명령
-
-    CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(mRtvHeap->GetCPUDescriptorHandleForHeapStart(), mCurrBackBuffer, mRtvDescriptorSize);
-
-    // 화면 전체를 덮는 필터를 그릴 때는 입체감이 필요 없으므로 깊이 버퍼(dsvHandle)를 nullptr로 꺼버립니다!
-    mCommandList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
-
-    // 2. 포스트 프로세싱 전용 계약서와 파이프라인(PSO)으로 교체합니다!
-    mCommandList->SetGraphicsRootSignature(mPostRootSignature.Get()); // 새로운 계약서 장착
-    mCommandList->SetPipelineState(mPostPSO.Get()); // 새로운 공장 라인 장착
-
-    // 3. 서랍장의 4번째 칸(Index 3)에 있는 '우리가 방금 그린 임시 도화지'를 셰이더에 넘겨줍니다!
-    CD3DX12_GPU_DESCRIPTOR_HANDLE postTexSrvHandle(heapStart, 3, mCbvSrvUavDescriptorSize);
-    mCommandList->SetGraphicsRootDescriptorTable(0, postTexSrvHandle); // 포스트 루트 시그니처의 0번 슬롯에 장착
-
-    // 4. 마법의 그리기 명령! (버텍스 버퍼 없이 점 3개 던지기)
-    mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST); // 삼각형 형태로
-    mCommandList->IASetVertexBuffers(0, 0, nullptr); // 버텍스 버퍼는 텅 빈 상태로!
-    mCommandList->IASetIndexBuffer(nullptr);         // 인덱스 버퍼도 텅 빈 상태로!
-
-    // 단 3개의 가상 꼭짓점(SV_VertexID 0, 1, 2)을 쏘아 보내어 화면 전체를 덮는 1개의 거대한 삼각형을 그립니다.
-    mCommandList->DrawInstanced(3, 1, 0, 0);
-
-    // 5. 모니터 버퍼에 필터 그림이 다 입혀졌으니 다시 화면 출력(PRESENT) 상태로 복구합니다.
-    barrier = CD3DX12_RESOURCE_BARRIER::Transition(
-        mSwapChainBuffer[mCurrBackBuffer].Get(),
-        D3D12_RESOURCE_STATE_RENDER_TARGET,
-        D3D12_RESOURCE_STATE_PRESENT
-    );
-    mCommandList->ResourceBarrier(1, &barrier);
-    // ========================================================================
-
+    // 3. 모든 명령을 닫고 제출합니다.
     mCommandList->Close();
     ID3D12CommandList* cmdsLists[] = { mCommandList.Get() };
     mCommandQueue->ExecuteCommandLists(1, cmdsLists);
@@ -675,19 +586,16 @@ bool D3D12Renderer::BuildGeometry()
 }
 // --------------------------------------------------------------------------
 
+//  [구조 분화] 임시 도화지 2개를 셰이더로 넘기기 위해 SRV 뷰 2개를 서랍장에 등록합니다. 
 bool D3D12Renderer::BuildConstantBuffers()
 {
-    //서랍장을 3칸으로 아주 깔끔하게 줄입니다! 
     D3D12_DESCRIPTOR_HEAP_DESC cbvHeapDesc;
-     //   [14단계 중요 수정] 서랍장의 크기를 3칸에서 4칸으로 늘립니다!  
-    cbvHeapDesc.NumDescriptors = 4; // 0:Pass, 1:Texture, 2:Instance, 3:Offscreen SRV
-    //   =========================================================================  
+    cbvHeapDesc.NumDescriptors = 5; // 0:Pass, 1:Tex, 2:Inst, 3:Offscreen0, 4:Offscreen1
     cbvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     cbvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     cbvHeapDesc.NodeMask = 0;
     mDevice->CreateDescriptorHeap(&cbvHeapDesc, IID_PPV_ARGS(&mCbvHeap));
 
-    // --- 0번 칸: Pass (공통 데이터) ---
     UINT passCBByteSize = CalcConstantBufferByteSize(sizeof(PassConstants));
     CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_UPLOAD);
     CD3DX12_RESOURCE_DESC passBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(passCBByteSize);
@@ -703,8 +611,7 @@ bool D3D12Renderer::BuildConstantBuffers()
     CD3DX12_CPU_DESCRIPTOR_HANDLE hDescriptor(mCbvHeap->GetCPUDescriptorHandleForHeapStart());
     mDevice->CreateConstantBufferView(&passCbvDesc, hDescriptor);
 
-    // --- 1번 칸: Texture (체크무늬) ---
-    hDescriptor.Offset(1, mCbvSrvUavDescriptorSize); // 한 칸 뒤로 이동
+    hDescriptor.Offset(1, mCbvSrvUavDescriptorSize);
 
     D3D12_SHADER_RESOURCE_VIEW_DESC texSrvDesc = {};
     texSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
@@ -716,10 +623,8 @@ bool D3D12Renderer::BuildConstantBuffers()
 
     mDevice->CreateShaderResourceView(mTexture.Get(), &texSrvDesc, hDescriptor);
 
-    // --- 2번 칸: Instance Data 배열 (100개 큐브 명부) ---
-    hDescriptor.Offset(1, mCbvSrvUavDescriptorSize); // 한 칸 더 뒤로 이동
+    hDescriptor.Offset(1, mCbvSrvUavDescriptorSize);
 
-    // 구조체 배열(SRV)은 256바이트 정렬 규칙을 지키지 않아도 됩니다! 아주 촘촘하게 배열을 만듭니다.
     UINT instanceBufferSize = sizeof(InstanceData) * NumInstances;
     CD3DX12_RESOURCE_DESC instBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(instanceBufferSize);
 
@@ -727,35 +632,32 @@ bool D3D12Renderer::BuildConstantBuffers()
         D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&mInstanceBuffer));
     mInstanceBuffer->Map(0, nullptr, reinterpret_cast<void**>(&mMappedInstanceData));
 
-    // 이 버퍼가 단순 데이터 배열(Structured Buffer)임을 GPU에 알려주는 뷰(SRV)를 만듭니다.
     D3D12_SHADER_RESOURCE_VIEW_DESC instSrvDesc = {};
     instSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    instSrvDesc.Format = DXGI_FORMAT_UNKNOWN; // 구조체 배열은 UNKNOWN 포맷을 씁니다.
+    instSrvDesc.Format = DXGI_FORMAT_UNKNOWN;
     instSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
     instSrvDesc.Buffer.FirstElement = 0;
-    instSrvDesc.Buffer.NumElements = NumInstances; // 총 100개
-    instSrvDesc.Buffer.StructureByteStride = sizeof(InstanceData); // 구조체 1개당 크기
+    instSrvDesc.Buffer.NumElements = NumInstances;
+    instSrvDesc.Buffer.StructureByteStride = sizeof(InstanceData);
     instSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
 
     mDevice->CreateShaderResourceView(mInstanceBuffer.Get(), &instSrvDesc, hDescriptor);
-   
-    //   [14단계 추가] 서랍장의 마지막 4번째 칸에, 방금 그려둔 '임시 도화지'를 텍스처(SRV)로 해석하는 안경을 꽂아둡니다!  
-    hDescriptor.Offset(1, mCbvSrvUavDescriptorSize); // 포인터를 4번째 칸으로 이동합니다.
 
-    D3D12_SHADER_RESOURCE_VIEW_DESC offscreenSrvDesc = {}; // SRV 안경의 스펙을 적습니다.
-    offscreenSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    offscreenSrvDesc.Format = mOffscreenTex->GetDesc().Format; // 도화지의 원래 포맷(R8G8B8A8)과 동일하게 맞춥니다.
-    offscreenSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D; // 2D 텍스처로 읽습니다.
-    offscreenSrvDesc.Texture2D.MostDetailedMip = 0; // 최고 화질부터
-    offscreenSrvDesc.Texture2D.MipLevels = 1; // 1장만 읽습니다.
-    offscreenSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+    // 임시 도화지(Offscreen) 0번과 1번의 뷰를 순서대로 생성
+    for (int i = 0; i < OffscreenBufferCount; ++i)
+    {
+        hDescriptor.Offset(1, mCbvSrvUavDescriptorSize);
+        D3D12_SHADER_RESOURCE_VIEW_DESC offscreenSrvDesc = {};
+        offscreenSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        offscreenSrvDesc.Format = mOffscreenTex[i]->GetDesc().Format;
+        offscreenSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        offscreenSrvDesc.Texture2D.MostDetailedMip = 0;
+        offscreenSrvDesc.Texture2D.MipLevels = 1;
+        offscreenSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+        mDevice->CreateShaderResourceView(mOffscreenTex[i].Get(), &offscreenSrvDesc, hDescriptor);
+    }
 
-    // 서랍장 마지막 칸에 뷰를 만들어 넣습니다! 이제 셰이더에서 이 그림을 텍스처처럼 꺼내 쓸 수 있습니다.
-    mDevice->CreateShaderResourceView(mOffscreenTex.Get(), &offscreenSrvDesc, hDescriptor);
-    //   =========================================================================  
-
-
-    return true; // 성공 반환
+    return true;
 }
 
 // CPU에서 가상의 '체크무늬 텍스처'를 만들어 GPU로 올리는 완전히 새로운 함수입니다.
@@ -841,128 +743,218 @@ bool D3D12Renderer::BuildTexture()
     return true;
 }
 
-//  [변경점 시작] 화면 밖 임시 렌더 타겟(도화지) 생성 함수 구현! 
-bool D3D12Renderer::BuildOffscreenRenderTarget()
+//   [구조 분화] 임시 도화지 2개(Ping, Pong)를 생성하도록 배열 루프로 처리합니다.  
+bool D3D12Renderer::BuildOffscreenRenderTargets()
 {
-    // 1. 임시 도화지로 쓸 텍스처(Texture2D) 메모리의 스펙을 정의합니다.
     D3D12_RESOURCE_DESC texDesc;
-    ZeroMemory(&texDesc, sizeof(D3D12_RESOURCE_DESC)); // 구조체의 모든 값을 0으로 안전하게 초기화합니다.
-    texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; // 2차원(2D) 텍스처 형태로 설정합니다.
-    texDesc.Alignment = 0; // 메모리 정렬을 기본값으로 둡니다.
-    texDesc.Width = mClientWidth; // 텍스처의 가로 해상도를 현재 윈도우 창의 너비와 똑같이 맞춥니다.
-    texDesc.Height = mClientHeight; // 텍스처의 세로 해상도를 창의 높이와 똑같이 맞춥니다.
-    texDesc.DepthOrArraySize = 1; // 텍스처는 1장만 필요합니다.
-    texDesc.MipLevels = 1; // 원본 해상도 1개(레벨 1)만 사용합니다.
-    texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM; // 모니터와 완벽히 동일한 RGBA 8비트 색상 포맷을 사용합니다.
-    texDesc.SampleDesc.Count = 1; // 안티앨리어싱(MSAA) 샘플 수를 1로 둡니다.
-    texDesc.SampleDesc.Quality = 0; // MSAA 품질을 0으로 둡니다.
-    texDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN; // 텍스처 메모리 내부 배치를 그래픽 드라이버가 알아서 최적화하도록 맡깁니다.
-
-    // ★ 가장 중요: 이 텍스처 메모리를 "그림을 그릴 도화지(RENDER_TARGET)" 용도로 쓸 수 있게 허가증을 발급합니다.
+    ZeroMemory(&texDesc, sizeof(D3D12_RESOURCE_DESC));
+    texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    texDesc.Alignment = 0;
+    texDesc.Width = mClientWidth;
+    texDesc.Height = mClientHeight;
+    texDesc.DepthOrArraySize = 1;
+    texDesc.MipLevels = 1;
+    texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    texDesc.SampleDesc.Count = 1;
+    texDesc.SampleDesc.Quality = 0;
+    texDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
     texDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
 
-    // 화면 지우기(Clear) 성능을 비약적으로 높이기 위해, 초기에 지울 최적의 색상값(하늘색)을 텍스처 생성 시 미리 알려줍니다.
     D3D12_CLEAR_VALUE optClear;
-    optClear.Format = DXGI_FORMAT_R8G8B8A8_UNORM; // 텍스처 포맷과 동일하게 맞춥니다.
-    optClear.Color[0] = 0.39f; // 지울 배경색의 Red 값 (하늘색)입니다.
-    optClear.Color[1] = 0.58f; // 지울 배경색의 Green 값입니다.
-    optClear.Color[2] = 0.93f; // 지울 배경색의 Blue 값입니다.
-    optClear.Color[3] = 1.0f;  // 지울 배경색의 Alpha(불투명도) 값입니다.
+    optClear.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    optClear.Color[0] = 0.39f; optClear.Color[1] = 0.58f; optClear.Color[2] = 0.93f; optClear.Color[3] = 1.0f;
 
-    CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_DEFAULT); // 가장 빠르고 GPU 전용인 VRAM(DEFAULT) 힙을 사용합니다.
+    CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_DEFAULT);
 
-    // 2. 정의한 스펙대로 실제 GPU 메모리에 임시 도화지 텍스처를 창조(Create)합니다!
-    HRESULT hr = mDevice->CreateCommittedResource(
-        &heapProps, D3D12_HEAP_FLAG_NONE, &texDesc,
-        D3D12_RESOURCE_STATE_GENERIC_READ, // ★ 렌더링이 시작되기 전이므로, 초기 상태를 '대기(READ)' 상태로 둡니다.
-        &optClear, IID_PPV_ARGS(&mOffscreenTex)); // 생성된 텍스처 객체를 mOffscreenTex 포인터에 담습니다.
-    if (FAILED(hr)) return false; // 생성에 실패하면 프로그램을 중단합니다.
-
-    // 3. 이 임시 도화지를 파이프라인(출력 병합기)에 묶을 때 사용할 RTV(안경) 전용 서랍장을 딱 1칸짜리로 만듭니다.
+    // RTV 서랍장을 2칸짜리로 만듭니다.
     D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc;
-    rtvHeapDesc.NumDescriptors = 1; // 서랍장 칸은 1개입니다.
-    rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV; // 서랍장의 종류를 RTV(Render Target View)로 지정합니다.
-    rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE; // 셰이더에서 이 서랍장을 볼 일은 없으므로 NONE을 줍니다.
-    rtvHeapDesc.NodeMask = 0; // 단일 GPU 모드로 설정합니다.
-    mDevice->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&mOffscreenRtvHeap)); // 서랍장 객체를 생성합니다.
+    rtvHeapDesc.NumDescriptors = OffscreenBufferCount;
+    rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    rtvHeapDesc.NodeMask = 0;
+    mDevice->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&mOffscreenRtvHeap));
 
-    // 4. 마지막으로 생성한 임시 도화지(mOffscreenTex)에 RTV 안경을 예쁘게 씌워서 방금 만든 서랍장(mOffscreenRtvHeap)에 넣습니다.
-    mDevice->CreateRenderTargetView(mOffscreenTex.Get(), nullptr, mOffscreenRtvHeap->GetCPUDescriptorHandleForHeapStart());
+    CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(mOffscreenRtvHeap->GetCPUDescriptorHandleForHeapStart());
 
-    // 이 그림을 나중에 포스트 프로세스 셰이더로 넘겨주기 위한 SRV 작업은 다음 단계에서 진행합니다.
-    return true; // 무사히 도화지가 완성되었음을 반환합니다.
+    // 루프를 돌며 텍스처 2개를 생성하고 서랍장에 꽂습니다.
+    for (int i = 0; i < OffscreenBufferCount; ++i)
+    {
+        HRESULT hr = mDevice->CreateCommittedResource(
+            &heapProps, D3D12_HEAP_FLAG_NONE, &texDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            &optClear, IID_PPV_ARGS(&mOffscreenTex[i]));
+        if (FAILED(hr)) return false;
+
+        mDevice->CreateRenderTargetView(mOffscreenTex[i].Get(), nullptr, rtvHandle);
+        rtvHandle.Offset(1, mRtvDescriptorSize);
+    }
+    return true;
 }
-//  ========================================================================= 
 
-//   [14단계 추가] 포스트 프로세싱용 계약서와 조립 라인(PSO)을 만드는 함수입니다.  
-bool D3D12Renderer::BuildPostProcessPipeline()
+//   [구조 분화] 여러 개의 포스트 프로세스 셰이더를 각각 컴파일하고 파이프라인을 구축합니다.  
+bool D3D12Renderer::BuildPostProcessPipelines()
 {
-    // 1. 포스트 프로세싱용 계약서(루트 시그니처) 작성
-    // 임시 도화지(OffscreenTex) 텍스처 하나만 t0 레지스터로 받으면 끝입니다!
     CD3DX12_DESCRIPTOR_RANGE srvTable;
-    srvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0); // t0 레지스터 매핑
-
+    srvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
     CD3DX12_ROOT_PARAMETER rootParameters[1];
-    rootParameters[0].InitAsDescriptorTable(1, &srvTable); // 계약 조항은 단 1개
+    rootParameters[0].InitAsDescriptorTable(1, &srvTable);
 
-    // 원본 도화지를 부드럽게 가져오기 위해 필터를 LINEAR(뭉개기)로 설정한 샘플러를 만듭니다.
     D3D12_STATIC_SAMPLER_DESC sampler = {};
     sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP; // 화면 밖을 벗어나면 테두리 색으로 늘어뜨림
+    sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
     sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
     sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
     sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
-    sampler.ShaderRegister = 0; // s0
+    sampler.ShaderRegister = 0;
     sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc;
-    // 입력 정점 구조체(InputLayout)를 안 쓰기 때문에 ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT 플래그를 뺍니다!
     rootSigDesc.Init(1, rootParameters, 1, &sampler, D3D12_ROOT_SIGNATURE_FLAG_NONE);
 
     ComPtr<ID3DBlob> serializedRootSig, errorBlob;
     HRESULT hr = D3D12SerializeRootSignature(&rootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1, &serializedRootSig, &errorBlob);
     if (FAILED(hr)) return false;
 
-    // 포스트 전용 루트 시그니처 완성!
     hr = mDevice->CreateRootSignature(0, serializedRootSig->GetBufferPointer(), serializedRootSig->GetBufferSize(), IID_PPV_ARGS(&mPostRootSignature));
 
-    // 2. 포스트 전용 셰이더 컴파일 (새로 만든 postprocess.hlsl 파일을 로드합니다)
-    ComPtr<ID3DBlob> vertexShader;
-    ComPtr<ID3DBlob> pixelShader;
-    UINT compileFlags = 0;
-#if defined(_DEBUG)
-    compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
-#endif
+    ComPtr<ID3DBlob> vsQuad, psGrayscale, psCRT;
+    UINT compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
 
-    // postprocess.hlsl 파일에서 VSMain과 PSMain을 컴파일하여 가져옵니다.
-    hr = D3DCompileFromFile(L"Source/Shaders/postprocess.hlsl", nullptr, nullptr, "VSMain", "vs_5_0", compileFlags, 0, &vertexShader, &errorBlob);
-    if (FAILED(hr)) { if (errorBlob) OutputDebugStringA((char*)errorBlob->GetBufferPointer()); return false; }
-    hr = D3DCompileFromFile(L"Source/Shaders/postprocess.hlsl", nullptr, nullptr, "PSMain", "ps_5_0", compileFlags, 0, &pixelShader, &errorBlob);
+    // 공통 버텍스 셰이더 로드
+    hr = D3DCompileFromFile(L"Source/Shaders/ScreenQuadVS.hlsl", nullptr, nullptr, "VSMain", "vs_5_0", compileFlags, 0, &vsQuad, &errorBlob);
     if (FAILED(hr)) { if (errorBlob) OutputDebugStringA((char*)errorBlob->GetBufferPointer()); return false; }
 
-    // 3. 포스트 전용 파이프라인(PSO) 설정
+    // 개별 픽셀 셰이더 로드
+    hr = D3DCompileFromFile(L"Source/Shaders/PP_Grayscale.hlsl", nullptr, nullptr, "PSMain", "ps_5_0", compileFlags, 0, &psGrayscale, &errorBlob);
+    if (FAILED(hr)) { if (errorBlob) OutputDebugStringA((char*)errorBlob->GetBufferPointer()); return false; }
+
+    hr = D3DCompileFromFile(L"Source/Shaders/PP_CRT.hlsl", nullptr, nullptr, "PSMain", "ps_5_0", compileFlags, 0, &psCRT, &errorBlob);
+    if (FAILED(hr)) { if (errorBlob) OutputDebugStringA((char*)errorBlob->GetBufferPointer()); return false; }
+
     D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
-    // 거대한 삼각형 꼼수를 쓰기 때문에 버텍스 버퍼 구조체(InputLayout)가 아예 필요 없습니다! (텅 빈 배열 전달)
     psoDesc.InputLayout = { nullptr, 0 };
     psoDesc.pRootSignature = mPostRootSignature.Get();
-    psoDesc.VS = { reinterpret_cast<BYTE*>(vertexShader->GetBufferPointer()), vertexShader->GetBufferSize() };
-    psoDesc.PS = { reinterpret_cast<BYTE*>(pixelShader->GetBufferPointer()), pixelShader->GetBufferSize() };
+    psoDesc.VS = { reinterpret_cast<BYTE*>(vsQuad->GetBufferPointer()), vsQuad->GetBufferSize() };
     psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
-    psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE; // 화면 덮는 삼각형이 잘리지 않게 컬링 끔
-    psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT); // 블렌딩 없음 (원본 위에 덮어씌움)
-
-    // 화면 전체에 무조건 덮어씌울 거니까 앞뒤 거리 재기(Depth Test)도 완전히 꺼버립니다!
+    psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
     psoDesc.DepthStencilState.DepthEnable = FALSE;
     psoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
-
     psoDesc.SampleMask = UINT_MAX;
     psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     psoDesc.NumRenderTargets = 1;
     psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
     psoDesc.SampleDesc.Count = 1;
 
-    // 포스트 전용 공장 라인 완성!
-    hr = mDevice->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&mPostPSO));
+    // 1. Grayscale용 PSO 조립
+    psoDesc.PS = { reinterpret_cast<BYTE*>(psGrayscale->GetBufferPointer()), psGrayscale->GetBufferSize() };
+    hr = mDevice->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&mPsoGrayscale));
+
+    // 2. CRT용 PSO 조립
+    psoDesc.PS = { reinterpret_cast<BYTE*>(psCRT->GetBufferPointer()), psCRT->GetBufferSize() };
+    hr = mDevice->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&mPsoCRT));
+
     return SUCCEEDED(hr);
+}
+
+//   =========================================================================  
+//   [구조 분화] 3D 오브젝트 렌더링을 전담하는 함수입니다.  
+void D3D12Renderer::RenderScene()
+{
+    // 대상 도화지를 '0번 임시 도화지(Ping)'로 설정합니다.
+    CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+        mOffscreenTex[0].Get(),
+        D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    mCommandList->ResourceBarrier(1, &barrier);
+
+    CD3DX12_CPU_DESCRIPTOR_HANDLE offscreenRtv(mOffscreenRtvHeap->GetCPUDescriptorHandleForHeapStart());
+    CD3DX12_CPU_DESCRIPTOR_HANDLE dsvHandle(mDsvHeap->GetCPUDescriptorHandleForHeapStart());
+
+    const float clearColor[] = { 0.39f, 0.58f, 0.93f, 1.0f };
+    mCommandList->ClearRenderTargetView(offscreenRtv, clearColor, 0, nullptr);
+    mCommandList->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, nullptr);
+
+    mCommandList->OMSetRenderTargets(1, &offscreenRtv, FALSE, &dsvHandle);
+    mCommandList->RSSetViewports(1, &mViewport);
+    mCommandList->RSSetScissorRects(1, &mScissorRect);
+
+    ID3D12DescriptorHeap* descriptorHeaps[] = { mCbvHeap.Get() };
+    mCommandList->SetDescriptorHeaps(_countof(descriptorHeaps), descriptorHeaps);
+
+    mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
+
+    CD3DX12_GPU_DESCRIPTOR_HANDLE heapStart(mCbvHeap->GetGPUDescriptorHandleForHeapStart());
+    mCommandList->SetGraphicsRootDescriptorTable(0, CD3DX12_GPU_DESCRIPTOR_HANDLE(heapStart, 0, mCbvSrvUavDescriptorSize));
+    mCommandList->SetGraphicsRootDescriptorTable(1, CD3DX12_GPU_DESCRIPTOR_HANDLE(heapStart, 1, mCbvSrvUavDescriptorSize));
+    mCommandList->SetGraphicsRootDescriptorTable(2, CD3DX12_GPU_DESCRIPTOR_HANDLE(heapStart, 2, mCbvSrvUavDescriptorSize));
+
+    mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    mCommandList->IASetVertexBuffers(0, 1, &mVertexBufferView);
+    mCommandList->IASetIndexBuffer(&mIndexBufferView);
+
+    mCommandList->DrawIndexedInstanced(mIndexCount, NumInstances, 0, 0, 0);
+
+    // 렌더링이 끝난 도화지는 다시 재료(READ)로 쓸 수 있게 전환합니다.
+    barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+        mOffscreenTex[0].Get(),
+        D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_GENERIC_READ);
+    mCommandList->ResourceBarrier(1, &barrier);
+}
+
+//   [구조 분화] 필터 체인(Ping-Pong)을 관리하는 포스트 프로세스 매니저 역할을 합니다.  
+void D3D12Renderer::RenderPostProcess()
+{
+    // 포스트 프로세스 전용 계약서 장착
+    mCommandList->SetGraphicsRootSignature(mPostRootSignature.Get());
+    mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    mCommandList->IASetVertexBuffers(0, 0, nullptr);
+    mCommandList->IASetIndexBuffer(nullptr);
+
+    CD3DX12_GPU_DESCRIPTOR_HANDLE heapStart(mCbvHeap->GetGPUDescriptorHandleForHeapStart());
+    CD3DX12_CPU_DESCRIPTOR_HANDLE rtvStart(mOffscreenRtvHeap->GetCPUDescriptorHandleForHeapStart());
+
+    // --- 체인 1: [0번 도화지 원본] -> (Grayscale 필터) -> [1번 도화지] ---
+    {
+        // 1번 도화지(Pong)를 그리기 모드로 전환
+        CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+            mOffscreenTex[1].Get(), D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        mCommandList->ResourceBarrier(1, &barrier);
+
+        CD3DX12_CPU_DESCRIPTOR_HANDLE rtv1(rtvStart, 1, mRtvDescriptorSize);
+        mCommandList->OMSetRenderTargets(1, &rtv1, FALSE, nullptr); // 깊이 버퍼 끔
+
+        mCommandList->SetPipelineState(mPsoGrayscale.Get()); // 흑백 필터 파이프라인 장착
+        // 0번 도화지(원본)를 재료(SRV)로 입력
+        mCommandList->SetGraphicsRootDescriptorTable(0, CD3DX12_GPU_DESCRIPTOR_HANDLE(heapStart, 3, mCbvSrvUavDescriptorSize));
+
+        mCommandList->DrawInstanced(3, 1, 0, 0); // 거대 삼각형 그리기
+
+        // 1번 도화지를 다 그렸으니 다시 재료(READ) 모드로 전환
+        barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+            mOffscreenTex[1].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_GENERIC_READ);
+        mCommandList->ResourceBarrier(1, &barrier);
+    }
+
+    // --- 체인 2: [1번 도화지 흑백본] -> (CRT 필터) -> [모니터(BackBuffer)] ---
+    {
+        // 최종 모니터 버퍼를 그리기 모드로 전환
+        CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+            mSwapChainBuffer[mCurrBackBuffer].Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        mCommandList->ResourceBarrier(1, &barrier);
+
+        CD3DX12_CPU_DESCRIPTOR_HANDLE finalRtv(mRtvHeap->GetCPUDescriptorHandleForHeapStart(), mCurrBackBuffer, mRtvDescriptorSize);
+        mCommandList->OMSetRenderTargets(1, &finalRtv, FALSE, nullptr);
+
+        mCommandList->SetPipelineState(mPsoCRT.Get()); // CRT 필터 파이프라인 장착
+        // 방금 흑백을 그려둔 1번 도화지(Pong)를 재료(SRV)로 입력
+        mCommandList->SetGraphicsRootDescriptorTable(0, CD3DX12_GPU_DESCRIPTOR_HANDLE(heapStart, 4, mCbvSrvUavDescriptorSize));
+
+        mCommandList->DrawInstanced(3, 1, 0, 0); // 거대 삼각형 그리기
+
+        // 모니터 출력을 위해 PRESENT 상태로 복구
+        barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+            mSwapChainBuffer[mCurrBackBuffer].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
+        mCommandList->ResourceBarrier(1, &barrier);
+    }
 }
 //   =========================================================================  

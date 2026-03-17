@@ -120,22 +120,22 @@ private: // 클래스 내부에서만 접근 가능한 그래픽스 인터페이스 객체들입니다.
     UINT mRtvDescriptorSize; // 현재 GPU에서 RTV 디스크립터 한 개가 차지하는 메모리 크기(바이트)를 구하여 저장해둡니다.
     int mCurrBackBuffer = 0; // 현재 화면 뒤에서 몰래 그림을 그리고 있는 백 버퍼의 인덱스(0 또는 1)를 추적합니다.
 
-    //   [구조 분화] 핑퐁 렌더링을 위해 임시 도화지 배열 크기를 2로 늘립니다.  
-    static const int OffscreenBufferCount = 2;
-    ComPtr<ID3D12Resource> mOffscreenTex[OffscreenBufferCount];// 그림을 몰래 렌더링해둘 고화질의 임시 텍스처 메모리 공간입니다.
-    ComPtr<ID3D12DescriptorHeap> mOffscreenRtvHeap; // 임시 도화지 전용의 렌더 타겟 안경(RTV)을 담을 서랍장입니다.
+    //   [구조 분화] 가우시안 핑퐁을 위해 도화지를 3개로 확장합니다.  
+    // 0번: 원본 씬, 1번: 밝기 추출 및 최종 세로 블러 (Ping), 2번: 가로 블러 (Pong)
+    static const int OffscreenBufferCount = 3;
+    ComPtr<ID3D12Resource> mOffscreenTex[OffscreenBufferCount]; // 임시 도화지 3장입니다.
+    ComPtr<ID3D12DescriptorHeap> mOffscreenRtvHeap; // 임시 도화지 전용 안경 서랍장입니다.
 
+    //   [구조 분화] 입력 텍스처 개수에 따라 상용 엔진처럼 루트 시그니처(계약서)를 두 가지로 분리합니다.  
+    ComPtr<ID3D12RootSignature> mPostRootSigSingle; // 텍스처 1개만 입력받는 계약서 (추출, 가로, 세로 블러용)
+    ComPtr<ID3D12RootSignature> mPostRootSigDouble; // 텍스처 2개를 동시에 입력받는 계약서 (최종 합성용)
 
-    //   [14단계 추가] 포스트 프로세싱 전용 계약서와 파이프라인 객체를 추가합니다!  
-    ComPtr<ID3D12RootSignature> mPostRootSignature; // 포스트 프로세스 전용 계약서 (텍스처 1개만 받음)
-    ComPtr<ID3D12PipelineState> mPsoGrayscale;
-    ComPtr<ID3D12PipelineState> mPsoCRT;
-    //  [변경점] 블룸 효과를 위한 2개의 파이프라인 변수로 이름을 변경했습니다. 
-    ComPtr<ID3D12PipelineState> mPsoBrightBlur; // 빛을 추출하고 뭉개는 파이프라인입니다.
-    ComPtr<ID3D12PipelineState> mPsoComposite; // 두 화면을 덧셈 합성하는 파이프라인입니다.
-
+    // 각 역할별 독립된 파이프라인(공장 라인)을 선언합니다.
+    ComPtr<ID3D12PipelineState> mPsoBrightPass; // 빛 추출 라인
+    ComPtr<ID3D12PipelineState> mPsoBlurH; // 가로 가우시안 블러 라인
+    ComPtr<ID3D12PipelineState> mPsoBlurV; // 세로 가우시안 블러 라인
+    ComPtr<ID3D12PipelineState> mPsoComposite; // 두 화면 합성 라인
     //   =========================================================================  
-
 
     ComPtr<ID3D12Fence> mFence; // CPU와 GPU의 작업 완료 타이밍을 맞추기 위한 동기화 객체(울타리)입니다.
     UINT64 mCurrentFence = 0; // 현재 CPU가 GPU에게 발급한 대기표(펜스 값) 번호를 저장합니다.

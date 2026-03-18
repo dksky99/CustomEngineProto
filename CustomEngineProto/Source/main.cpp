@@ -13,16 +13,18 @@
 
 #include "Core/EngineConfig.h"
 #include "Core/Timer/GameTimer.h"
-#include "Graphics/D3D12Renderer.h"
+#include "Graphics/Core/D3D12Renderer.h"
 
 //  [추가점] 구조 개편에 따라 메인 함수에서도 프레임워크 요소(Scene, Actor)들을 사용할 수 있도록 헤더를 포함합니다. 
-#include "Framework/Scene.h" // 액터들을 담을 거대한 세상(맵) 객체입니다.
-#include "Framework/Actor.h" // 씬에 스폰될 개별 물체 객체입니다.
+#include "Framework/Core/Scene.h" // 액터들을 담을 거대한 세상(맵) 객체입니다.
+#include "Framework/Core/Actor.h" // 씬에 스폰될 개별 물체 객체입니다.
 
-#include "Framework/Camera.h" 
+#include "Framework/Core/Camera.h" 
 
 #include "Game/CubeActor.h"
 
+//  액터에게 외형 부품을 달아주기 위해 메시 컴포넌트 헤더를 포함합니다. 
+#include "Framework/Components/MeshComponent.h" 
 // 윈도우에서 발생하는 이벤트(키보드 입력, 마우스 클릭, 닫기 버튼 등)를 처리할 콜백 함수의 원형을 선언합니다.
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 
@@ -61,32 +63,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 
     ShowWindow(hwnd, nCmdShow); // 메모리에 생성된 윈도우를 실제 모니터 화면에 표시합니다.
    
-    //  렌더러가 그림을 그리기 전에, 개발자(우리)가 씬을 1개 만들고 100개의 큐브 액터를 직접 배치하는 레벨 디자인을 수행합니다! 
-    Scene scene; // 월드(맵)를 담당할 씬 객체를 메모리에 올립니다.
-
-    for (int i = 0; i < 10; ++i) // 세로로 10줄을 배치하기 위한 루프입니다.
-    { // 외부 루프 시작입니다.
-        for (int j = 0; j < 10; ++j) // 가로로 10칸을 배치하기 위한 루프입니다.
-        { // 내부 루프 시작입니다.
-            int index = i * 10 + j; // 0번부터 99번까지 순차적인 인덱스를 계산합니다.
-            float xPos = (j - 4.5f) * 2.0f; // 각 큐브가 겹치지 않게 X축 간격을 벌려 좌표를 도출합니다.
-            float zPos = (i - 4.5f) * 2.0f; // 큐브가 겹치지 않게 Z축 간격을 벌려 좌표를 도출합니다.
-
-            // 우리가 설계한 '빙글빙글 도는 큐브' 클래스의 인스턴스(객체)를 스마트 포인터로 동적 생성합니다.
-            std::shared_ptr<CubeActor> cube = std::make_shared<CubeActor>();
-            cube->CubeIndex = index; // 이 객체에게 고유한 식별 번호를 주입하여 회전 속도를 차별화합니다.
-            // 객체 내부의 트랜스폼 포인터를 쏙 빼와서, 방금 계산한 X와 Z 좌표를 초기 위치로 쾅! 박아줍니다.
-            cube->GetTransform()->Position = { xPos, 0.0f, zPos };
-
-            scene.AddActor(cube); // 위치 세팅이 끝난 이 큐브 액터를 최종적으로 씬(월드) 명부에 등록시킵니다.
-        } // 내부 루프 끝입니다.
-    } // 외부 루프 끝입니다.
-    
-    
-    
-    GameTimer timer; // 위에서 우리가 만든 게임 타이머 객체의 인스턴스를 생성합니다.
-    timer.Reset(); // 본격적인 렌더링 루프에 들어가기 직전, 타이머의 기준점을 현재 시간으로 초기화합니다.
-
     D3D12Renderer renderer;
     if (!renderer.Initialize(hwnd, config.WindowWidth, config.WindowHeight))
     {
@@ -94,6 +70,41 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         return 0;
     }
 
+
+    //  렌더러가 그림을 그리기 전에, 개발자(우리)가 씬을 1개 만들고 100개의 큐브 액터를 직접 배치하는 레벨 디자인을 수행합니다! 
+    Scene scene; // 월드(맵)를 담당할 씬 객체를 메모리에 올립니다.
+
+    //  상용 엔진처럼 액터 생성 -> 컴포넌트 생성 -> 메시 씌우기 -> 액터 조립의 과정을 거칩니다! 
+    for (int i = 0; i < 10; ++i) // 루프 시작
+    {
+        for (int j = 0; j < 10; ++j) // 루프 시작
+        {
+            int index = i * 10 + j; // 인덱스 계산
+            float xPos = (j - 4.5f) * 2.0f; // X 위치 계산
+            float zPos = (i - 4.5f) * 2.0f; // Z 위치 계산
+
+            std::shared_ptr<CubeActor> cube = std::make_shared<CubeActor>(); // 빈 액터를 만듭니다.
+            cube->CubeIndex = index; // 인덱스 부여
+            cube->GetTransform()->Position = { xPos, 0.0f, zPos }; // 초기 위치 부여
+
+            // 1. 빈 메시 컴포넌트(부품)를 하나 메모리에 찍어냅니다.
+            std::shared_ptr<MeshComponent> meshComp = std::make_shared<MeshComponent>();
+            // 2. 렌더러가 만들어둔 기본 정육면체 모델 데이터의 포인터를 얻어와 부품에 쏙 끼웁니다.
+            meshComp->SetMesh(renderer.GetDefaultMesh());
+            // 3. 모델 데이터가 들어간 이 껍데기 부품을 액터의 몸에 장착합니다!
+            cube->AddComponent(meshComp);
+
+            scene.AddActor(cube); // 모든 조립이 끝난 액터를 씬 명부에 올려줍니다.
+        } // 루프 끝
+    } // 루프 끝
+
+    
+    
+    
+    GameTimer timer; // 위에서 우리가 만든 게임 타이머 객체의 인스턴스를 생성합니다.
+    timer.Reset(); // 본격적인 렌더링 루프에 들어가기 직전, 타이머의 기준점을 현재 시간으로 초기화합니다.
+
+   
     // 3. 우리의 눈이 되어줄 카메라 객체를 생성하고 렌즈를 장착합니다! 
     Camera camera;
     // 시야각 45도, 창 비율에 맞는 원근감, 최소깊이 1.0, 최대깊이 1000.0 짜리 렌즈를 카메라에 끼웁니다.

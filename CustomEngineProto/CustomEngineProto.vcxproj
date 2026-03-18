@@ -133,25 +133,31 @@
     <None Include="packages.config" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="Source\Framework\Camera.cpp" />
+    <ClCompile Include="Source\Graphics\Resources\Mesh.cpp" />
+    <ClCompile Include="Source\Framework\Core\Camera.cpp" />
+    <ClCompile Include="Source\Framework\Components\Component.cpp" />
+    <ClCompile Include="Source\Framework\Components\MeshComponent.cpp" />
     <ClCompile Include="Source\Game\CubeActor.cpp" />
-    <ClCompile Include="Source\Framework\Scene.cpp" />
-    <ClCompile Include="Source\Framework\Actor.cpp" />
+    <ClCompile Include="Source\Framework\Core\Scene.cpp" />
+    <ClCompile Include="Source\Framework\Core\Actor.cpp" />
     <ClCompile Include="Source\Core\Timer\GameTimer.cpp" />
     <ClCompile Include="Source\framework.cpp" />
-    <ClCompile Include="Source\Graphics\D3D12Renderer.cpp" />
+    <ClCompile Include="Source\Graphics\Core\D3D12Renderer.cpp" />
     <ClCompile Include="Source\main.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="Source\Framework\Camera.h" />
+    <ClInclude Include="Source\Graphics\Resources\Mesh.h" />
+    <ClInclude Include="Source\Framework\Components\Component.h" />
+    <ClInclude Include="Source\Framework\Core\Camera.h" />
+    <ClInclude Include="Source\Framework\Components\MeshComponent.h" />
     <ClInclude Include="Source\Game\CubeActor.h" />
-    <ClInclude Include="Source\Framework\Scene.h" />
-    <ClInclude Include="Source\Framework\Actor.h" />
+    <ClInclude Include="Source\Framework\Core\Scene.h" />
+    <ClInclude Include="Source\Framework\Core\Actor.h" />
     <ClInclude Include="Source\Core\EngineConfig.h" />
     <ClInclude Include="Source\Core\Timer\GameTimer.h" />
     <ClInclude Include="Source\framework.h" />
-    <ClInclude Include="Source\Framework\Transform.h" />
-    <ClInclude Include="Source\Graphics\D3D12Renderer.h" />
+    <ClInclude Include="Source\Framework\Core\Transform.h" />
+    <ClInclude Include="Source\Graphics\Core\D3D12Renderer.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="Source\Shaders\color.hlsl">

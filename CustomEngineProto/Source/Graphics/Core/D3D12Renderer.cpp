@@ -4,10 +4,14 @@
 #include <algorithm> 
 
 
+
+#include "Graphics/Resources/Mesh.h" // 분리된 메시 구조체를 사용하기 위해 포함합니다.
 // 렌더러가 씬과 액터의 정보를 파악할 수 있도록 방금 만든 프레임워크 헤더 파일들을 참조합니다. 
-#include "Framework/Scene.h" // 렌더러가 화면에 그릴 타겟 씬(맵)을 파악하기 위함입니다.
-#include "Framework/Actor.h" // 씬 안에 들어있는 액터들의 위치(Transform)를 빼오기 위함입니다.
-#include "Framework/Camera.h" 
+
+#include "Framework/Core/Scene.h" // 렌더러가 화면에 그릴 타겟 씬(맵)을 파악하기 위함입니다.
+#include "Framework/Core/Actor.h" // 씬 안에 들어있는 액터들의 위치(Transform)를 빼오기 위함입니다.
+#include "Framework/Components/MeshComponent.h" //  액터가 메시 부품을 달고 있는지 검사하기 위해 포함합니다. 
+#include "Framework/Core/Camera.h" 
 
 // 소스 코드 내에서 링커에게 컴파일러 라이브러리를 연결하라고 지시합니다.
 #pragma comment(lib, "d3dcompiler.lib") 
@@ -168,8 +172,11 @@ bool D3D12Renderer::Initialize(HWND hwnd, int width, int height) // DX12 초기화 
     if (!BuildPSO()) return false;           // 2. 파이프라인 상태 객체 세팅
     // 기하학 데이터를 세팅하기 전에, 텍스처 이미지를 먼저 생성해서 메모리에 올려줍니다!
     if (!BuildTexture()) return false;
-    if (!BuildGeometry()) return false;      // 3. 기하학(버텍스+인덱스) 데이터 세팅
-
+    //if (!BuildGeometry()) return false;      // 3. 기하학(버텍스+인덱스) 데이터 세팅
+     //  렌더러가 길게 쓰던 기하학 생성 함수(BuildGeometry) 대신, 외부 메시 클래스를 생성하고 위임합니다! 
+    mDefaultBoxMesh = std::make_shared<Mesh>(); // 렌더러 소유의 기본 박스 메시를 동적 생성합니다.
+    mDefaultBoxMesh->CreateBox(mDevice.Get()); // 메시 객체 스스로 GPU 메모리를 할당하여 모양을 만들게 지시합니다.
+    //  ========================================================================= 
     //   [구조 분화] 변경된 초기화 함수들을 호출합니다.  
     if (!BuildOffscreenRenderTargets()) return false;
     if (!BuildConstantBuffers()) return false;
@@ -225,19 +232,28 @@ void D3D12Renderer::Update(float deltaTime, Scene* scene,Camera* camera)
     passConstants.EyePosW = camera->GetPosition();
 
     memcpy(mMappedPassCB, &passConstants, sizeof(PassConstants));
-    // 렌더러가 더 이상 스스로 큐브 회전 수식을 돌리지 않습니다! 
-    // 렌더러는 오직 "씬이 관리하는 액터 목록을 가져와서 GPU 서랍장에 밀어 넣는 일"만 전문적으로 수행합니다.
-    const auto& actors = scene->GetActors(); // 파라미터로 받은 씬 객체에게서 모든 액터 배열을 얻어옵니다.
-    int drawCount = (int)(actors.size())< NumInstances? (int)(actors.size()): NumInstances; // 버퍼 최대치(100개)를 초과해서 복사하다가 엔진이 뻗는 것을 방지합니다.
+    //  렌더 배칭(Render Batching)의 기초! 모든 액터를 무식하게 다 그리지 않고 필터링합니다. 
+    mInstanceCountToDraw = 0; // 이번 프레임에 그려야 할 인스턴스 카운트를 0으로 초기화합니다.
+    const auto& actors = scene->GetActors(); // 씬에서 모든 액터 배열을 가져옵니다.
 
-    for (int i = 0; i < drawCount; ++i) // 액터 개수만큼 루프를 돕니다.
-    { // 루프 시작입니다.
-        // 각 액터가 스스로 업데이트해둔 '최종 월드 변환 행렬'을 액터의 트랜스폼 객체로부터 그냥 가져오기만 합니다.
-        XMMATRIX finalWorld = actors[i]->GetTransform()->GetWorldMatrix();
+    for (auto& actor : actors) // 세상의 모든 액터를 순회합니다.
+    { // 루프 시작
+        // 해당 액터가 '외형 부품(MeshComponent)'을 장착하고 있는지 검색해서 포인터를 가져옵니다.
+        auto meshComp = actor->GetComponent<MeshComponent>();
 
-        // 가져온 행렬을 HLSL 셰이더 규격에 맞게 전치(Transpose)하여, 100개짜리 GPU 명부(InstanceData 배열)의 i번째 칸에 덮어씌웁니다!
-        XMStoreFloat4x4(&mMappedInstanceData[i].World, XMMatrixTranspose(finalWorld));
-    } // 루프 끝입니다.
+        // 만약 메시 컴포넌트가 있고, 그 컴포넌트에 빈 껍데기가 아닌 진짜 3D 모델(Mesh)이 꽂혀 있다면!
+        if (meshComp && meshComp->GetMesh())
+        { // 렌더링 합격 블록
+            XMMATRIX finalWorld = actor->GetTransform()->GetWorldMatrix(); // 액터의 3D 공간 행렬을 뽑아냅니다.
+
+            // GPU 인스턴스 명부의 비어있는 다음 칸에 이 행렬을 덮어씌웁니다.
+            XMStoreFloat4x4(&mMappedInstanceData[mInstanceCountToDraw].World, XMMatrixTranspose(finalWorld));
+
+            mInstanceCountToDraw++; // 그려야 할 목록 1명 추가요!
+
+            if (mInstanceCountToDraw >= NumInstances) break; // 최대치(100)를 넘으면 엔진 뻗는 걸 막기 위해 탈출합니다.
+        } // 합격 블록 끝
+    } // 루프 끝
 }
 
 //   [구조 분화] 엔진의 메인 Draw 함수가 구조적으로 매우 깔끔해졌습니다!  
@@ -424,100 +440,6 @@ bool D3D12Renderer::BuildPSO() // PSO 구축
     return SUCCEEDED(hr);
 }
 
-// --- 새롭게 업데이트된 BuildGeometry (정육면체 버텍스 + 인덱스 버퍼) ---
-bool D3D12Renderer::BuildGeometry()
-{
-    // 모든 꼭짓점에 텍스처를 씌우기 위한 종이접기 전개도 좌표(UV 좌표, 0.0 ~ 1.0)를 추가합니다.
-     // 텍스처의 색상이 그대로 보이도록 꼭짓점 기본 색상은 순백색(1.0, 1.0, 1.0)으로 통일합니다.
-    std::vector<Vertex> vertices =
-    {
-        // 1. 앞면 (Front Face)
-        { {-0.5f, -0.5f, -0.5f}, {1.0f, 1.0f, 1.0f, 1.0f}, {0.0f, 0.0f, -1.0f}, {0.0f, 1.0f} }, // 좌하 (U:0, V:1)
-        { {-0.5f, +0.5f, -0.5f}, {1.0f, 1.0f, 1.0f, 1.0f}, {0.0f, 0.0f, -1.0f}, {0.0f, 0.0f} }, // 좌상 (U:0, V:0)
-        { {+0.5f, +0.5f, -0.5f}, {1.0f, 1.0f, 1.0f, 1.0f}, {0.0f, 0.0f, -1.0f}, {1.0f, 0.0f} }, // 우상 (U:1, V:0)
-        { {+0.5f, -0.5f, -0.5f}, {1.0f, 1.0f, 1.0f, 1.0f}, {0.0f, 0.0f, -1.0f}, {1.0f, 1.0f} }, // 우하 (U:1, V:1)
-
-        // 2. 뒷면 (Back Face)
-        { {-0.5f, -0.5f, +0.5f}, {1.0f, 1.0f, 1.0f, 1.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f} },
-        { {+0.5f, -0.5f, +0.5f}, {1.0f, 1.0f, 1.0f, 1.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f} },
-        { {+0.5f, +0.5f, +0.5f}, {1.0f, 1.0f, 1.0f, 1.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f} },
-        { {-0.5f, +0.5f, +0.5f}, {1.0f, 1.0f, 1.0f, 1.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 0.0f} },
-
-        // 3. 윗면 (Top Face)
-        { {-0.5f, +0.5f, -0.5f}, {1.0f, 1.0f, 1.0f, 1.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 1.0f} },
-        { {-0.5f, +0.5f, +0.5f}, {1.0f, 1.0f, 1.0f, 1.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f} },
-        { {+0.5f, +0.5f, +0.5f}, {1.0f, 1.0f, 1.0f, 1.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f} },
-        { {+0.5f, +0.5f, -0.5f}, {1.0f, 1.0f, 1.0f, 1.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 1.0f} },
-
-        // 4. 아랫면 (Bottom Face)
-        { {-0.5f, -0.5f, -0.5f}, {1.0f, 1.0f, 1.0f, 1.0f}, {0.0f, -1.0f, 0.0f}, {1.0f, 1.0f} },
-        { {+0.5f, -0.5f, -0.5f}, {1.0f, 1.0f, 1.0f, 1.0f}, {0.0f, -1.0f, 0.0f}, {0.0f, 1.0f} },
-        { {+0.5f, -0.5f, +0.5f}, {1.0f, 1.0f, 1.0f, 1.0f}, {0.0f, -1.0f, 0.0f}, {0.0f, 0.0f} },
-        { {-0.5f, -0.5f, +0.5f}, {1.0f, 1.0f, 1.0f, 1.0f}, {0.0f, -1.0f, 0.0f}, {1.0f, 0.0f} },
-
-        // 5. 왼쪽 면 (Left Face)
-        { {-0.5f, -0.5f, +0.5f}, {1.0f, 1.0f, 1.0f, 1.0f}, {-1.0f, 0.0f, 0.0f}, {0.0f, 1.0f} },
-        { {-0.5f, +0.5f, +0.5f}, {1.0f, 1.0f, 1.0f, 1.0f}, {-1.0f, 0.0f, 0.0f}, {0.0f, 0.0f} },
-        { {-0.5f, +0.5f, -0.5f}, {1.0f, 1.0f, 1.0f, 1.0f}, {-1.0f, 0.0f, 0.0f}, {1.0f, 0.0f} },
-        { {-0.5f, -0.5f, -0.5f}, {1.0f, 1.0f, 1.0f, 1.0f}, {-1.0f, 0.0f, 0.0f}, {1.0f, 1.0f} },
-
-        // 6. 오른쪽 면 (Right Face)
-        { {+0.5f, -0.5f, -0.5f}, {1.0f, 1.0f, 1.0f, 1.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f} },
-        { {+0.5f, +0.5f, -0.5f}, {1.0f, 1.0f, 1.0f, 1.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f} },
-        { {+0.5f, +0.5f, +0.5f}, {1.0f, 1.0f, 1.0f, 1.0f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f} },
-        { {+0.5f, -0.5f, +0.5f}, {1.0f, 1.0f, 1.0f, 1.0f}, {1.0f, 0.0f, 0.0f}, {1.0f, 1.0f} }
-    };
-
-    std::vector<std::uint16_t> indices =
-    {
-        // 꼭짓점이 24개로 늘어났으므로, 인덱스 번호도 각 면(4개의 점)에 맞게 새로 이어줍니다.
-        0, 1, 2,  0, 2, 3,       // 앞면
-        4, 5, 6,  4, 6, 7,       // 뒷면
-        8, 9, 10, 8, 10, 11,     // 윗면
-        12, 13, 14, 12, 14, 15,  // 아랫면
-        16, 17, 18, 16, 18, 19,  // 왼쪽 면
-        20, 21, 22, 20, 22, 23   // 오른쪽 면
-    };
-
-    const UINT vbByteSize = (UINT)vertices.size() * sizeof(Vertex); // 정점 버퍼의 총 바이트 크기
-    const UINT ibByteSize = (UINT)indices.size() * sizeof(std::uint16_t); // 인덱스 버퍼의 총 바이트 크기
-    mIndexCount = (UINT)indices.size(); // 총 그려야 할 인덱스 개수(36개) 저장
-
-    // --- 버텍스 버퍼(Vertex Buffer) GPU에 생성 및 복사 ---
-    CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_UPLOAD);
-    CD3DX12_RESOURCE_DESC vbDesc = CD3DX12_RESOURCE_DESC::Buffer(vbByteSize);
-
-    mDevice->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &vbDesc,
-        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&mVertexBuffer));
-
-    UINT8* pVertexDataBegin;
-    mVertexBuffer->Map(0, nullptr, reinterpret_cast<void**>(&pVertexDataBegin));
-    memcpy(pVertexDataBegin, vertices.data(), vbByteSize);
-    mVertexBuffer->Unmap(0, nullptr);
-
-    mVertexBufferView.BufferLocation = mVertexBuffer->GetGPUVirtualAddress();
-    mVertexBufferView.StrideInBytes = sizeof(Vertex);
-    mVertexBufferView.SizeInBytes = vbByteSize;
-
-    // --- 인덱스 버퍼(Index Buffer) GPU에 생성 및 복사 ---
-    CD3DX12_RESOURCE_DESC ibDesc = CD3DX12_RESOURCE_DESC::Buffer(ibByteSize);
-
-    mDevice->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &ibDesc,
-        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&mIndexBuffer)); // 인덱스용 GPU 메모리 할당
-
-    UINT8* pIndexDataBegin;
-    mIndexBuffer->Map(0, nullptr, reinterpret_cast<void**>(&pIndexDataBegin)); // 메모리 열기
-    memcpy(pIndexDataBegin, indices.data(), ibByteSize); // C++ 번호표 데이터를 GPU로 복사!
-    mIndexBuffer->Unmap(0, nullptr); // 메모리 닫기
-
-    // GPU가 이 버퍼를 '인덱스'로 읽을 수 있도록 뷰(View)를 세팅합니다.
-    mIndexBufferView.BufferLocation = mIndexBuffer->GetGPUVirtualAddress();
-    mIndexBufferView.Format = DXGI_FORMAT_R16_UINT; // 16비트 부호없는 정수(uint16_t) 포맷을 사용합니다.
-    mIndexBufferView.SizeInBytes = ibByteSize;
-
-    return true;
-}
-// --------------------------------------------------------------------------
 
 //   [구조 분화] 임시 도화지 3장을 읽기 위한 뷰(SRV)를 공용 서랍장에 등록합니다.  
 bool D3D12Renderer::BuildConstantBuffers()
@@ -849,10 +771,21 @@ void D3D12Renderer::RenderScene()
     mCommandList->SetGraphicsRootDescriptorTable(2, CD3DX12_GPU_DESCRIPTOR_HANDLE(heapStart, 2, mCbvSrvUavDescriptorSize));
 
     mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    mCommandList->IASetVertexBuffers(0, 1, &mVertexBufferView);
-    mCommandList->IASetIndexBuffer(&mIndexBufferView);
 
-    mCommandList->DrawIndexedInstanced(mIndexCount, NumInstances, 0, 0, 0);
+
+    //  렌더러가 들고 있던 뷰 변수 대신, 메시 객체에게 뷰를 꺼내 달라고 요청합니다. 
+    D3D12_VERTEX_BUFFER_VIEW vbv = mDefaultBoxMesh->GetVertexBufferView(); // 메시에서 정점 뷰 획득
+    mCommandList->IASetVertexBuffers(0, 1, &vbv); // 파이프라인 장착
+
+    D3D12_INDEX_BUFFER_VIEW ibv = mDefaultBoxMesh->GetIndexBufferView(); // 메시에서 인덱스 뷰 획득
+    mCommandList->IASetIndexBuffer(&ibv); // 파이프라인 장착
+
+    //  무조건 100개를 그리는 게 아니라, Update에서 걸러낸 '메시 컴포넌트를 가진 진짜 수량(mInstanceCountToDraw)'만큼만 그립니다! 
+    if (mInstanceCountToDraw > 0) // 그릴 녀석이 1명이라도 존재할 때만 드로우 콜 발사
+    {
+        mCommandList->DrawIndexedInstanced(mDefaultBoxMesh->GetIndexCount(), mInstanceCountToDraw, 0, 0, 0); // 그리기!
+    }
+
 
     // 렌더링이 끝난 도화지는 다시 재료(READ)로 쓸 수 있게 전환합니다.
     barrier = CD3DX12_RESOURCE_BARRIER::Transition(

@@ -1,5 +1,5 @@
 #pragma once
-#include "Framework/Actor.h"
+#include "Framework/Core/Actor.h"
 
 //  [신규 파일] 프레임워크를 활용해 개발자가 직접 만든 첫 번째 '게임 콘텐츠' 클래스입니다. 
 class CubeActor : public Actor // 엔진의 기본 Actor 클래스를 상속받아 CubeActor를 만듭니다.

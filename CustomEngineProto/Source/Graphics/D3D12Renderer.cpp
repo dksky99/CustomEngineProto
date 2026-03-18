@@ -4,6 +4,11 @@
 #include <algorithm> 
 
 
+// 렌더러가 씬과 액터의 정보를 파악할 수 있도록 방금 만든 프레임워크 헤더 파일들을 참조합니다. 
+#include "Framework/Scene.h" // 렌더러가 화면에 그릴 타겟 씬(맵)을 파악하기 위함입니다.
+#include "Framework/Actor.h" // 씬 안에 들어있는 액터들의 위치(Transform)를 빼오기 위함입니다.
+#include "Framework/Camera.h" 
+
 // 소스 코드 내에서 링커에게 컴파일러 라이브러리를 연결하라고 지시합니다.
 #pragma comment(lib, "d3dcompiler.lib") 
 #pragma comment(lib, "dxguid.lib") // DX12의 인터페이스 ID(GUID)들이 정의된 라이브러리를 연결합니다.
@@ -23,31 +28,6 @@ bool D3D12Renderer::Initialize(HWND hwnd, int width, int height) // DX12 초기화 
     mMainWindow = hwnd; // 매개변수로 받은 윈도우 핸들을 멤버 변수에 저장합니다.
     mClientWidth = width; // 창의 너비를 저장합니다.
     mClientHeight = height; // 창의 높이를 저장합니다.
-
-    
-    // 더 이상 여기서 고정된 View 행렬을 만들지 않습니다. Update 함수에서 매 프레임 실시간으로 만들 것입니다.
-    XMStoreFloat4x4(&mView, XMMatrixIdentity()); // 일단 단위 행렬로 초기화해 둡니다.
-
-    // 화면 비율에 맞는 원근감을 만들어내는 투영(Projection) 행렬을 생성합니다. (시야각 45도)
-    XMMATRIX proj = XMMatrixPerspectiveFovLH(0.25f * XM_PI, static_cast<float>(width) / height, 1.0f, 1000.0f);
-    XMStoreFloat4x4(&mProj, proj); // 멤버 변수에 저장합니다.
-
-    // 10x10 격자 모양으로 총 100개의 큐브 위치(World 행렬)를 미리 쫙 깔아둡니다! 
-    for (int i = 0; i < 10; ++i) // 세로(Z축) 10줄
-    {
-        for (int j = 0; j < 10; ++j) // 가로(X축) 10줄
-        {
-            int index = i * 10 + j; // 0 ~ 99번 인덱스
-
-            // 큐브 사이의 간격을 2.0 단위로 벌려서 바둑판처럼 배치합니다. 중앙(0,0,0)을 기준으로 퍼지게 만듭니다.
-            float xPos = (j - 4.5f) * 2.0f;
-            float zPos = (i - 4.5f) * 2.0f;
-
-            // 이동(Translation) 행렬만 만들어서 해당 인덱스에 저장해 둡니다. (아직 회전은 적용 안 함)
-            XMMATRIX world = XMMatrixTranslation(xPos, 0.0f, zPos);
-            XMStoreFloat4x4(&mWorld[index], world);
-        }
-    }
 
 
 
@@ -194,59 +174,17 @@ bool D3D12Renderer::Initialize(HWND hwnd, int width, int height) // DX12 초기화 
     if (!BuildOffscreenRenderTargets()) return false;
     if (!BuildConstantBuffers()) return false;
     if (!BuildPostProcessPipelines()) return false;
-    //   =========================================================================  
-    //   =========================================================================  
 
-
-    GetCursorPos(&mLastMousePos);//마우스 델타값을 구하기 위해 시작할 때의 초기 마우스 위치를 한 번 찍어둡니다.
 
     return true; // 초기화 완벽히 성공!
 } // Initialize 함수의 끝
 
 // --- Update 함수 구현 ---
-void D3D12Renderer::Update(float deltaTime)
+void D3D12Renderer::Update(float deltaTime, Scene* scene,Camera* camera)
 {
-    // 1. === 마우스 회전(시선 처리) 로직 ===
-    POINT currentMousePos;
-    GetCursorPos(&currentMousePos);
+    
 
-    if ((GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0)
-    {
-        float dx = XMConvertToRadians(0.25f * static_cast<float>(currentMousePos.x - mLastMousePos.x));
-        float dy = XMConvertToRadians(0.25f * static_cast<float>(currentMousePos.y - mLastMousePos.y));
-
-        mCameraYaw += dx;
-        mCameraPitch += dy;
-
-        mCameraPitch = std::clamp(mCameraPitch, -1.5f, 1.5f);
-    }
-    mLastMousePos = currentMousePos;
-
-    // 2. === 방향 벡터 계산 로직 ===
-    XMMATRIX camRotation = XMMatrixRotationRollPitchYaw(mCameraPitch, mCameraYaw, 0.0f);
-
-    XMVECTOR camForward = XMVector3TransformNormal(XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f), camRotation);
-    XMVECTOR camRight = XMVector3TransformNormal(XMVectorSet(1.0f, 0.0f, 0.0f, 0.0f), camRotation);
-    XMVECTOR camUp = XMVector3TransformNormal(XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f), camRotation);
-
-    // 3. === 키보드 이동(WASD) 로직 ===
-    XMVECTOR camPos = XMLoadFloat3(&mCameraPos);
-    float moveSpeed = 5.0f * deltaTime;
-
-    if (GetAsyncKeyState('W') & 0x8000) camPos += camForward * moveSpeed;
-    if (GetAsyncKeyState('S') & 0x8000) camPos -= camForward * moveSpeed;
-    if (GetAsyncKeyState('D') & 0x8000) camPos += camRight * moveSpeed;
-    if (GetAsyncKeyState('A') & 0x8000) camPos -= camRight * moveSpeed;
-    if (GetAsyncKeyState('E') & 0x8000) camPos += camUp * moveSpeed;
-    if (GetAsyncKeyState('Q') & 0x8000) camPos -= camUp * moveSpeed;
-
-    XMStoreFloat3(&mCameraPos, camPos);
-
-    // 4. === 최종 뷰(View) 행렬 업데이트 ===
-    XMVECTOR camTarget = camPos + camForward;
-
-    XMMATRIX view = XMMatrixLookAtLH(camPos, camTarget, camUp);
-    XMStoreFloat4x4(&mView, view);
+   
 
     // ====================================================================
     // [3단계: 파이프라인 전송 (W * V * P)]
@@ -254,11 +192,10 @@ void D3D12Renderer::Update(float deltaTime)
     // ====================================================================
     static float totalTime = 0.0f;
     totalTime += deltaTime;
-
-    XMMATRIX proj = XMLoadFloat4x4(&mProj);
-
-    // 1. 공통(Pass) 상수 버퍼 업데이트 (카메라의 V * P 1개)
-    XMMATRIX viewProj = view * proj;
+    // 렌더러가 직접 계산하던 뷰와 투영 행렬을, 카메라 객체에게서 우아하게 꺼내옵니다. 
+    XMMATRIX view = camera->GetView(); // 카메라가 세팅해둔 시점(View) 행렬을 받습니다.
+    XMMATRIX proj = camera->GetProj(); // 카메라가 세팅해둔 원근감(Proj) 행렬을 받습니다.
+    XMMATRIX viewProj = view * proj; // V*P 연산을 수행하여 최종 압축 행렬을 만듭니다.
 
     PassConstants passConstants;
     XMStoreFloat4x4(&passConstants.ViewProj, XMMatrixTranspose(viewProj));
@@ -284,27 +221,23 @@ void D3D12Renderer::Update(float deltaTime)
 
     //  [ ] C++ 코드는 이 두 줄만 추가되면 완벽합니다! 
     passConstants.TotalTime = totalTime; // 현재 흐른 누적 시간을 셰이더에게 전달합니다. (UV를 움직일 때 사용)
-    passConstants.EyePosW = mCameraPos; // 현재 카메라가 위치한 월드 좌표를 셰이더에게 전달합니다. (스페큘러 계산에 필수)
-
-
+    // 렌더러가 직접 들고 있던 위치 대신, 카메라 객체에게 "너 지금 3D 위치가 어디야?" 하고 물어서 위치값을 가져와 광택 연산용으로 포장합니다. 
+    passConstants.EyePosW = camera->GetPosition();
 
     memcpy(mMappedPassCB, &passConstants, sizeof(PassConstants));
+    // 렌더러가 더 이상 스스로 큐브 회전 수식을 돌리지 않습니다! 
+    // 렌더러는 오직 "씬이 관리하는 액터 목록을 가져와서 GPU 서랍장에 밀어 넣는 일"만 전문적으로 수행합니다.
+    const auto& actors = scene->GetActors(); // 파라미터로 받은 씬 객체에게서 모든 액터 배열을 얻어옵니다.
+    int drawCount = (int)(actors.size())< NumInstances? (int)(actors.size()): NumInstances; // 버퍼 최대치(100개)를 초과해서 복사하다가 엔진이 뻗는 것을 방지합니다.
 
-    // 2. 100개 큐브의 고유(Object) 상수 버퍼 배열 업데이트 (각자의 World 행렬들)
-    for (int i = 0; i < NumInstances; ++i)
-    {
-        // 격자 위치 행렬을 불러옵니다.
-        XMMATRIX baseWorld = XMLoadFloat4x4(&mWorld[i]);
+    for (int i = 0; i < drawCount; ++i) // 액터 개수만큼 루프를 돕니다.
+    { // 루프 시작입니다.
+        // 각 액터가 스스로 업데이트해둔 '최종 월드 변환 행렬'을 액터의 트랜스폼 객체로부터 그냥 가져오기만 합니다.
+        XMMATRIX finalWorld = actors[i]->GetTransform()->GetWorldMatrix();
 
-        // 회원님께서 원하셨던 "큐브 개별 자전 애니메이션"이 바로 이곳에 있습니다! 
-        // 큐브마다 제각각 다른 속도와 방향으로 예쁘게 돌도록 i 값을 조금씩 섞어줍니다.
-        XMMATRIX rotation = XMMatrixRotationX(totalTime * (1.0f + i * 0.01f)) * XMMatrixRotationY(totalTime * (0.5f + i * 0.02f));
-        XMMATRIX finalWorld = rotation * baseWorld; // 자전(회전)한 뒤, 격자 위치로 보냅니다!
-
-        
-        // 더 이상 복잡한 주소 계산이 필요 없습니다! 구조체 배열에 바로 대입합니다.
+        // 가져온 행렬을 HLSL 셰이더 규격에 맞게 전치(Transpose)하여, 100개짜리 GPU 명부(InstanceData 배열)의 i번째 칸에 덮어씌웁니다!
         XMStoreFloat4x4(&mMappedInstanceData[i].World, XMMatrixTranspose(finalWorld));
-    }
+    } // 루프 끝입니다.
 }
 
 //   [구조 분화] 엔진의 메인 Draw 함수가 구조적으로 매우 깔끔해졌습니다!  
@@ -597,7 +530,9 @@ bool D3D12Renderer::BuildConstantBuffers()
     cbvHeapDesc.NodeMask = 0;
     mDevice->CreateDescriptorHeap(&cbvHeapDesc, IID_PPV_ARGS(&mCbvHeap));
 
+    //상수버퍼 사이즈 계산
     UINT passCBByteSize = CalcConstantBufferByteSize(sizeof(PassConstants));
+
     CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_UPLOAD);
     CD3DX12_RESOURCE_DESC passBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(passCBByteSize);
 

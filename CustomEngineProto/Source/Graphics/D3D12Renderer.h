@@ -7,6 +7,13 @@
 #include <DirectXPackedVector.h> // 압축된 수학 데이터 타입을 위한 헤더를 포함합니다.
 #include "d3dx12.h" // D3D12 구조체 초기화를 돕는 헬퍼 헤더를 포함합니다.
 
+// 렌더러가 새롭게 도입된 씬(Scene) 개념을 인지할 수 있도록 전방 선언(Forward Declaration)을 해줍니다. 
+class Scene; // Scene이라는 클래스가 외부에 존재함을 컴파일러에게 미리 알려줍니다.
+
+//  렌더러가 외부에서 전달받을 '카메라(Camera)' 클래스의 존재를 미리 알려줍니다. 
+class Camera;
+
+
 using Microsoft::WRL::ComPtr; // 코드의 가독성을 위해 Microsoft::WRL 네임스페이스의 ComPtr을 사용한다고 선언합니다.
 using namespace DirectX; // DirectXMath의 함수들을 편하게 쓰기 위해 네임스페이스를 개방합니다.
 
@@ -66,7 +73,7 @@ public: // 외부에서 호출할 수 있는 퍼블릭 함수들입니다.
 
 
     // --- 새롭게 추가된 함수: 매 프레임 수학 연산(행렬 갱신)을 처리할 함수입니다. ---
-    void Update(float deltaTime);
+    void Update(float deltaTime, Scene* scene, Camera* camera);
 
 
     void Draw(); // 매 프레임마다 호출되어 화면을 특정 색상으로 지우고(Clear) 화면에 출력(Present)하는 함수입니다.
@@ -182,18 +189,6 @@ private: // 클래스 내부에서만 접근 가능한 그래픽스 인터페이스 객체들입니다.
     ComPtr<ID3D12Resource> mTextureUploadBuffer;
 
 
-    // 자유 카메라를 위한 변수들 
-    DirectX::XMFLOAT3 mCameraPos = { 0.0f, 15.0f, -15.0f }; // 카메라의 현재 3D 위치를 저장합니다. (기본값: Z축 뒤쪽)
-    float mCameraPitch = 0.7f; // 카메라가 위/아래를 쳐다보는 각도(Pitch)입니다.
-    float mCameraYaw = 0.0f; // 카메라가 좌/우를 쳐다보는 각도(Yaw)입니다.
-    POINT mLastMousePos = { 0, 0 }; // 마우스가 얼마나 움직였는지 계산하기 위해 이전 프레임의 마우스 위치를 저장합니다.
-    
-    //  큐브 100개의 월드 행렬을 담을 배열을 선언합니다.
-    DirectX::XMFLOAT4X4 mWorld[NumInstances]; // 각 큐브의 고유한 위치 행렬들을 보관합니다.
-
-    // --- 3D 공간을 구성할 기본 행렬들입니다. ---
-    DirectX::XMFLOAT4X4 mView; // 카메라의 위치와 바라보는 방향을 나타내는 뷰(View) 행렬입니다.
-    DirectX::XMFLOAT4X4 mProj; // 3D 원근감을 만들어내는 투영(Projection) 행렬입니다.
 
 
 

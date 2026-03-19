@@ -13,6 +13,11 @@
 #include "Framework/Components/MeshComponent.h" //  액터가 메시 부품을 달고 있는지 검사하기 위해 포함합니다. 
 #include "Framework/Core/Camera.h" 
 
+
+//  렌더러가 텍스처와 머티리얼을 생성하고 관리하기 위해 새 헤더들을 불러옵니다. 
+#include "Graphics/Resources/Texture.h" // 분리된 메시 구조체를 사용하기 위해 포함합니다.
+#include "Graphics/Resources/Material.h" // 분리된 메시 구조체를 사용하기 위해 포함합니다.
+
 // 소스 코드 내에서 링커에게 컴파일러 라이브러리를 연결하라고 지시합니다.
 #pragma comment(lib, "d3dcompiler.lib") 
 #pragma comment(lib, "dxguid.lib") // DX12의 인터페이스 ID(GUID)들이 정의된 라이브러리를 연결합니다.
@@ -167,11 +172,36 @@ bool D3D12Renderer::Initialize(HWND hwnd, int width, int height) // DX12 초기화 
     mDevice->CreateDepthStencilView(mDepthStencilBuffer.Get(), nullptr, mDsvHeap->GetCPUDescriptorHandleForHeapStart());
     // -------------------------------------------------------------
 
+
+    mCommandAllocator->Reset(); // 텍스처를 굽기 위한 임시 명령을 기록하기 위해 할당자를 엽니다.
+    mCommandList->Reset(mCommandAllocator.Get(), nullptr); // 명령서를 엽니다.
+
+    // 1. 텍스처 객체를 메모리에 생성합니다.
+    mDefaultTexture = std::make_shared<Texture>();
+    // 2. 객체 내부의 함수를 호출하여 체크무늬 패턴을 GPU에 굽도록 명령서(mCommandList)에 기록합니다.
+    mDefaultTexture->CreateCheckerboard(mDevice.Get(), mCommandList.Get());
+
+    // 명령서를 닫고 우체통에 넣어 즉시 실행시킵니다.
+    mCommandList->Close();
+    ID3D12CommandList* cmdsLists[] = { mCommandList.Get() };
+    mCommandQueue->ExecuteCommandLists(1, cmdsLists);
+
+    // 텍스처 복사가 완전히 끝날 때까지 펜스 동기화로 CPU를 잠시 대기시킵니다.
+    FlushCommandQueue();
+
+    // 3. 머티리얼 객체를 메모리에 생성합니다.
+    mDefaultMaterial = std::make_shared<Material>();
+    // 4. 이 머티리얼에 방금 구워낸 텍스처를 쏙 끼워 넣어 완성합니다!
+    mDefaultMaterial->DiffuseMap = mDefaultTexture;
+
+
+
+
+
     // --- 엔진 파이프라인 및 데이터 초기화 핵심 ---
     if (!BuildRootSignature()) return false; // 1. 루트 시그니처 세팅
     if (!BuildPSO()) return false;           // 2. 파이프라인 상태 객체 세팅
-    // 기하학 데이터를 세팅하기 전에, 텍스처 이미지를 먼저 생성해서 메모리에 올려줍니다!
-    if (!BuildTexture()) return false;
+    //  [삭제됨] if (!BuildTexture()) return false; 호출 구문이 사라졌습니다! 
 
     mDefaultBoxMesh = std::make_shared<Mesh>(); // 렌더러 소유의 기본 박스 메시를 동적 생성합니다.
     //  새로 만든 LoadFromOBJ를 호출하여 외부 3D 모델 파일을 로드 시도합니다. 
@@ -476,15 +506,20 @@ bool D3D12Renderer::BuildConstantBuffers()
 
     hDescriptor.Offset(1, mCbvSrvUavDescriptorSize);
 
-    D3D12_SHADER_RESOURCE_VIEW_DESC texSrvDesc = {};
-    texSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    texSrvDesc.Format = mTexture->GetDesc().Format;
-    texSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    texSrvDesc.Texture2D.MostDetailedMip = 0;
-    texSrvDesc.Texture2D.MipLevels = mTexture->GetDesc().MipLevels;
-    texSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+    // 중간에 텍스처 SRV(뷰)를 생성하는 핵심 부분만 아래와 같이 변경됩니다!
+    D3D12_SHADER_RESOURCE_VIEW_DESC texSrvDesc = {}; // 뷰 스펙 초기화
+    texSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING; // 기본 매핑
 
-    mDevice->CreateShaderResourceView(mTexture.Get(), &texSrvDesc, hDescriptor);
+    // 렌더러가 들고 있던 변수 대신, 분리된 텍스처 객체의 포인터를 타고 들어가 텍스처의 포맷 형식을 알아냅니다.
+    texSrvDesc.Format = mDefaultTexture->GetResource()->GetDesc().Format;
+
+    texSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D; // 2D 텍스처
+    texSrvDesc.Texture2D.MostDetailedMip = 0; // 최대 화질
+    texSrvDesc.Texture2D.MipLevels = 1; // 1장
+    texSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f; // 기본 클램프
+
+    // 디바이스에 뷰를 생성하라고 지시할 때도, 텍스처 객체에서 실제 메모리 주소(Get)를 빼옵니다.
+    mDevice->CreateShaderResourceView(mDefaultTexture->GetResource().Get(), &texSrvDesc, hDescriptor);
 
     hDescriptor.Offset(1, mCbvSrvUavDescriptorSize);
 
@@ -523,88 +558,6 @@ bool D3D12Renderer::BuildConstantBuffers()
     return true;
 }
 
-// CPU에서 가상의 '체크무늬 텍스처'를 만들어 GPU로 올리는 완전히 새로운 함수입니다.
-bool D3D12Renderer::BuildTexture()
-{
-    const UINT texWidth = 256;  // 텍스처 가로 크기
-    const UINT texHeight = 256; // 텍스처 세로 크기
-    const UINT texPixelSize = 4; // 1픽셀당 4바이트 (R, G, B, A)
-
-    // 1. GPU 메모리에 이미지를 담을 '텍스처용 도화지(Default Heap)'를 만듭니다.
-    D3D12_RESOURCE_DESC texDesc = {};
-    texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    texDesc.Alignment = 0;
-    texDesc.Width = texWidth;
-    texDesc.Height = texHeight;
-    texDesc.DepthOrArraySize = 1;
-    texDesc.MipLevels = 1;
-    texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    texDesc.SampleDesc.Count = 1;
-    texDesc.SampleDesc.Quality = 0;
-    texDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    texDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
-
-    CD3DX12_HEAP_PROPERTIES defaultHeap(D3D12_HEAP_TYPE_DEFAULT);
-    mDevice->CreateCommittedResource(
-        &defaultHeap, D3D12_HEAP_FLAG_NONE, &texDesc,
-        D3D12_RESOURCE_STATE_COPY_DEST, // 데이터를 받을 준비(COPY_DEST) 상태로 둡니다.
-        nullptr, IID_PPV_ARGS(&mTexture));
-
-    // 2. CPU 데이터를 GPU로 전달하기 위한 중간 다리(Upload Buffer)를 만듭니다.
-    const UINT64 uploadBufferSize = texWidth * texHeight * texPixelSize;
-    CD3DX12_HEAP_PROPERTIES uploadHeap(D3D12_HEAP_TYPE_UPLOAD);
-    CD3DX12_RESOURCE_DESC bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(uploadBufferSize);
-    mDevice->CreateCommittedResource(
-        &uploadHeap, D3D12_HEAP_FLAG_NONE, &bufferDesc,
-        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&mTextureUploadBuffer));
-
-    // 3. CPU에서 수학적으로 예쁜 "체크무늬(Checkerboard)" 배열을 만듭니다.
-    std::vector<uint8_t> textureData(uploadBufferSize);
-    for (UINT y = 0; y < texHeight; y++)
-    {
-        for (UINT x = 0; x < texWidth; x++)
-        {
-            // 32픽셀마다 색이 반전되는 체크무늬 알고리즘입니다.
-            bool isWhite = ((x / 32) % 2) == ((y / 32) % 2);
-            uint8_t color = isWhite ? 255 : 50; // 흰색(255)과 짙은 회색(50) 교차
-
-            UINT index = (y * texWidth + x) * texPixelSize;
-            textureData[index + 0] = color;     // R
-            textureData[index + 1] = color;     // G
-            textureData[index + 2] = 255;       // B (푸른빛을 살짝 섞어서 세련되게 만듭니다)
-
-            //  [  3] 텍스처의 알파(A) 값을 반투명하게 조절합니다! 
-             // 흰색 칸은 70% 정도 불투명하게(180), 회색 칸은 20% 정도만 불투명하게(50) 설정해 봅니다.
-            textureData[index + 3] = isWhite ? 180 : 50;
-        }
-    }
-
-    // 4. 업로드 버퍼를 통해 GPU의 텍스처 도화지에 그림을 덮어씌웁니다.
-    // (이 작업은 '명령어'를 통해서만 가능하므로, 닫혀있던 커맨드 리스트를 잠깐 엽니다.)
-    mCommandAllocator->Reset();
-    mCommandList->Reset(mCommandAllocator.Get(), nullptr);
-
-    D3D12_SUBRESOURCE_DATA subResourceData = {};
-    subResourceData.pData = textureData.data();
-    subResourceData.RowPitch = texWidth * texPixelSize;
-    subResourceData.SlicePitch = subResourceData.RowPitch * texHeight;
-
-    // d3dx12.h의 마법 같은 함수! 배열 데이터를 GPU 텍스처에 완벽하게 복사해줍니다.
-    UpdateSubresources(mCommandList.Get(), mTexture.Get(), mTextureUploadBuffer.Get(), 0, 0, 1, &subResourceData);
-
-    // 5. 복사가 끝난 텍스처를 "셰이더가 읽을 수 있는 상태(PIXEL_SHADER_RESOURCE)"로 배리어 전환합니다.
-    CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
-        mTexture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-    mCommandList->ResourceBarrier(1, &barrier);
-
-    // 커맨드를 제출하고 완료될 때까지 확실하게 기다립니다.
-    mCommandList->Close();
-    ID3D12CommandList* cmdsLists[] = { mCommandList.Get() };
-    mCommandQueue->ExecuteCommandLists(1, cmdsLists);
-    FlushCommandQueue();
-
-    return true;
-}
 
 bool D3D12Renderer::BuildOffscreenRenderTargets() //   임시 도화지 3장을 생성합니다.  
 {

@@ -133,6 +133,7 @@
     <None Include="packages.config" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="Source\Graphics\Resources\Material.cpp" />
     <ClCompile Include="Source\Graphics\Resources\Mesh.cpp" />
     <ClCompile Include="Source\Framework\Core\Camera.cpp" />
     <ClCompile Include="Source\Framework\Components\Component.cpp" />
@@ -144,8 +145,10 @@
     <ClCompile Include="Source\framework.cpp" />
     <ClCompile Include="Source\Graphics\Core\D3D12Renderer.cpp" />
     <ClCompile Include="Source\main.cpp" />
+    <ClCompile Include="Source\Graphics\Resources\Texture.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="Source\Graphics\Resources\Material.h" />
     <ClInclude Include="Source\Graphics\Resources\Mesh.h" />
     <ClInclude Include="Source\Framework\Components\Component.h" />
     <ClInclude Include="Source\Framework\Core\Camera.h" />
@@ -158,6 +161,7 @@
     <ClInclude Include="Source\framework.h" />
     <ClInclude Include="Source\Framework\Core\Transform.h" />
     <ClInclude Include="Source\Graphics\Core\D3D12Renderer.h" />
+    <ClInclude Include="Source\Graphics\Resources\Texture.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="Source\Shaders\color.hlsl">

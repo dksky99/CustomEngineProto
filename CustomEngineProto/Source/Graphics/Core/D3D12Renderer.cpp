@@ -172,10 +172,15 @@ bool D3D12Renderer::Initialize(HWND hwnd, int width, int height) // DX12 초기화 
     if (!BuildPSO()) return false;           // 2. 파이프라인 상태 객체 세팅
     // 기하학 데이터를 세팅하기 전에, 텍스처 이미지를 먼저 생성해서 메모리에 올려줍니다!
     if (!BuildTexture()) return false;
-    //if (!BuildGeometry()) return false;      // 3. 기하학(버텍스+인덱스) 데이터 세팅
-     //  렌더러가 길게 쓰던 기하학 생성 함수(BuildGeometry) 대신, 외부 메시 클래스를 생성하고 위임합니다! 
+
     mDefaultBoxMesh = std::make_shared<Mesh>(); // 렌더러 소유의 기본 박스 메시를 동적 생성합니다.
-    mDefaultBoxMesh->CreateBox(mDevice.Get()); // 메시 객체 스스로 GPU 메모리를 할당하여 모양을 만들게 지시합니다.
+    //  새로 만든 LoadFromOBJ를 호출하여 외부 3D 모델 파일을 로드 시도합니다. 
+   // 만약 "Resources/Models/model.obj" 파일이 존재하지 않는다면 함수가 false를 반환합니다.
+    if (!mDefaultBoxMesh->LoadFromOBJ("Resources/Models/model.obj", mDevice.Get()))
+    { // 파일이 없을 경우 (Fallback)
+        OutputDebugStringA("Failed to load OBJ file. Falling back to default Box.\n"); // 디버그 창에 실패를 알립니다.
+        mDefaultBoxMesh->CreateBox(mDevice.Get()); // 파일이 없으므로 임시로 기존의 정육면체 큐브 데이터를 생성합니다.
+    } // 조건문 끝
     //  ========================================================================= 
     //   [구조 분화] 변경된 초기화 함수들을 호출합니다.  
     if (!BuildOffscreenRenderTargets()) return false;

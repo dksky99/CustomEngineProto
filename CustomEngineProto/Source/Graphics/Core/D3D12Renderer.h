@@ -30,6 +30,9 @@ struct PassConstants
     DirectX::XMFLOAT4 LightColor = { 1.0f, 1.0f, 1.0f, 1.0f }; // 공통 빛 색상
     DirectX::XMFLOAT3 EyePosW = { 0.0f, 0.0f, 0.0f }; // 추가 2: 스페큘러(반사) 계산을 위해 셰이더가 알아야 할 '현재 카메라의 3D 위치'
     float padding = 0.0f; // 16바이트 정렬(Float4) 규칙을 맞추기 위해 빈칸(패딩) 1개를 추가합니다.
+    //  월드 좌표를 '태양(빛)의 시야(View * Proj)'로 변환해 줄 마법의 섀도우 변환 행렬입니다! 
+    DirectX::XMFLOAT4X4 LightTransform = { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f };
+
 };
 // CPU에서 계산한 행렬 데이터를 GPU(셰이더)로 넘겨주기 위한 상수 구조체입니다.
 // 2. 각각의 큐브(인스턴스)마다 다르게 가질 고유 데이터 (월드 위치/회전)
@@ -95,6 +98,14 @@ private:
 
     //   [14단계 추가] 포스트 프로세싱용 두 번째 파이프라인(PSO)을 조립하는 함수입니다.  
     bool BuildPostProcessPipelines(); // 필터를 먹이는 공장 라인을 만듭니다.
+
+
+    // 섀도우 맵(그림자 텍스처) 자원을 생성하는 전용 함수입니다. 
+    bool BuildShadowMap();
+
+    //  플레이어 시점이 아니라 '태양 시점'에서 깊이(그림자)만 그리는 함수입니다. 
+    void RenderShadows();
+
     //   =========================================================================  
      //   [구조 분화] 복잡했던 Draw 함수를 역할에 맞게 엔진처럼 나눕니다.  
     void RenderScene(); // 3D 모델(큐브)들을 그리는 단계
@@ -149,6 +160,17 @@ private: // 클래스 내부에서만 접근 가능한 그래픽스 인터페이스 객체들입니다.
 
 
     ComPtr<ID3D12PipelineState> mPSO; // 파이프라인 상태 객체(PSO)입니다.
+
+    //  오직 Z-버퍼(깊이)만 계산하고 색상은 칠하지 않는 그림자 전용 공장 라인(PSO)입니다. 
+    ComPtr<ID3D12PipelineState> mPsoShadow;
+
+    // 섀도우 맵 관련 리소스들입니다! 
+    ComPtr<ID3D12Resource> mShadowMap; // 2048x2048 사이즈의 거대한 그림자 깊이 텍스처입니다.
+    ComPtr<ID3D12DescriptorHeap> mShadowDsvHeap; // 섀도우 맵 전용 깊이 안경(DSV)을 넣을 서랍장입니다.
+    D3D12_VIEWPORT mShadowViewport; // 고해상도 그림자를 위한 2048x2048 뷰포트입니다.
+    D3D12_RECT mShadowScissorRect; // 그림자용 자르기 영역입니다.
+
+
 
     // 지저분한 정점/인덱스 버퍼 변수들을 싹 지우고, 깔끔한 메시 클래스 포인터 하나로 통합했습니다! 
     std::shared_ptr<Mesh> mDefaultBoxMesh; // 렌더러가 관리하는 기본 박스 3D 모델입니다.

@@ -57,6 +57,19 @@ bool D3D12Renderer::Initialize(HWND hwnd, int width, int height) // DX12 초기화 
     // 가위(Scissor) 사각형 설정: 이 영역 바깥은 렌더링하지 않습니다.
     mScissorRect = { 0, 0, width, height }; // 전체 창 크기 지정
 
+
+    //  고해상도 그림자를 위해 태양의 뷰포트는 2048x2048 사이즈로 별도로 세팅합니다! 
+    mShadowViewport.TopLeftX = 0.0f; // 그림자 뷰포트 X
+    mShadowViewport.TopLeftY = 0.0f; // 그림자 뷰포트 Y
+    mShadowViewport.Width = 2048.0f; // 가로 2048 픽셀 (그림자 퀄리티를 결정함)
+    mShadowViewport.Height = 2048.0f; // 세로 2048 픽셀
+    mShadowViewport.MinDepth = 0.0f; // 최소 깊이
+    mShadowViewport.MaxDepth = 1.0f; // 최대 깊이
+    mShadowScissorRect = { 0, 0, 2048, 2048 }; // 그림자용 자르기 영역
+    //  ========================================================================= 
+
+
+
 #if defined(_DEBUG) // 현재 빌드 모드가 디버그(Debug) 모드일 때만 실행되는 전처리 구문입니다.
     ComPtr<ID3D12Debug> debugController; // DX12의 오류를 잡아줄 디버그 컨트롤러 객체를 선언합니다.
     if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController)))) // 디버그 인터페이스를 성공적으로 가져왔다면,
@@ -171,15 +184,22 @@ bool D3D12Renderer::Initialize(HWND hwnd, int width, int height) // DX12 초기화 
     // 할당된 GPU 텍스처 메모리를 아까 만든 서랍장(DSV Heap) 첫 번째 칸에 예쁘게 꽂아 넣습니다.
     mDevice->CreateDepthStencilView(mDepthStencilBuffer.Get(), nullptr, mDsvHeap->GetCPUDescriptorHandleForHeapStart());
     // -------------------------------------------------------------
+    //  그림자를 그릴 거대한 2048x2048 깊이 텍스처(Shadow Map) 자원을 생성합니다. 
+    if (!BuildShadowMap()) return false;
 
-
-    mCommandAllocator->Reset(); // 텍스처를 굽기 위한 임시 명령을 기록하기 위해 할당자를 엽니다.
+    // ---  [24단계 핵심 추가점: 외부 이미지 파일(PNG) 파싱 및 텍스처 로딩] ---
+    mCommandAllocator->Reset(); // 텍스처 GPU 복사를 위해 임시로 명령 할당자를 엽니다.
     mCommandList->Reset(mCommandAllocator.Get(), nullptr); // 명령서를 엽니다.
 
-    // 1. 텍스처 객체를 메모리에 생성합니다.
-    mDefaultTexture = std::make_shared<Texture>();
-    // 2. 객체 내부의 함수를 호출하여 체크무늬 패턴을 GPU에 굽도록 명령서(mCommandList)에 기록합니다.
-    mDefaultTexture->CreateCheckerboard(mDevice.Get(), mCommandList.Get());
+    mDefaultTexture = std::make_shared<Texture>(); // 텍스처 객체를 메모리에 올립니다.
+
+    // 방금 만든 LoadFromFile 함수를 호출하여 외부 폴더의 "box.png" 이미지 파일을 읽어오라고 지시합니다!
+    if (!mDefaultTexture->LoadFromFile(L"Resources/Textures/Test.png", mDevice.Get(), mCommandList.Get()))
+    { // 조건문 시작: 만약 파일이 없거나 경로가 틀려서 불러오기에 실패했다면
+        OutputDebugStringA("Failed to load Texture file. Falling back to Checkerboard.\n"); // 디버그 창에 실패를 알립니다.
+        // 엔진이 뻗지 않도록(Fallback), 우리가 C++로 짰던 기존 체크무늬 패턴을 생성해서 대처합니다.
+        mDefaultTexture->CreateCheckerboard(mDevice.Get(), mCommandList.Get());
+    } // 조건문 끝
 
     // 명령서를 닫고 우체통에 넣어 즉시 실행시킵니다.
     mCommandList->Close();
@@ -266,6 +286,35 @@ void D3D12Renderer::Update(float deltaTime, Scene* scene,Camera* camera)
     // 렌더러가 직접 들고 있던 위치 대신, 카메라 객체에게 "너 지금 3D 위치가 어디야?" 하고 물어서 위치값을 가져와 광택 연산용으로 포장합니다. 
     passConstants.EyePosW = camera->GetPosition();
 
+    // ---  [핵심 로직] 1. 태양(빛)의 눈으로 바라본 세상의 뷰와 원근 행렬을 만듭니다!  ---
+
+   // 태양의 위치를 계산합니다. (빛 방향의 정반대 편 50m 위 허공에 태양을 둡니다)
+    XMVECTOR lightPos = -lightDir * 50.0f;
+    XMVECTOR targetPos = XMVectorSet(0.0f, 0.0f, 0.0f, 0.0f); // 태양은 세상의 중심(원점)을 바라봅니다.
+    XMVECTOR lightUp = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f); // 태양의 위쪽 방향입니다.
+    XMMATRIX lightView = XMMatrixLookAtLH(lightPos, targetPos, lightUp); // 태양 시점의 View 행렬이 완성되었습니다!
+
+    // 태양은 직사광선이므로 멀리 있다고 작게 보이지 않습니다. 따라서 직교 투영(Orthographic) 원근 행렬을 씁니다.
+    // 40x40 크기의 빛기둥이 1m부터 100m 앞까지 일직선으로 내리꽂힙니다.
+    XMMATRIX lightProj = XMMatrixOrthographicLH(40.0f, 40.0f, 1.0f, 100.0f);
+
+    // DX12의 공간 좌표(-1~1)를 텍스처를 읽기 위한 UV 좌표(0~1)로 변환해 주는 마법의 보정 행렬입니다.
+    XMMATRIX T(
+        0.5f, 0.0f, 0.0f, 0.0f,
+        0.0f, -0.5f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.5f, 0.5f, 0.0f, 1.0f
+    );
+
+    // 태양의 View * Proj * UV보정 행렬을 곱해 섀도우 맵 전용 "빛의 변환 행렬"을 완성합니다!
+    XMMATRIX lightTransform = lightView * lightProj * T;
+
+    // 이 행렬을 상수 버퍼 구조체에 담아 픽셀 셰이더로 던져줍니다.
+    XMStoreFloat4x4(&passConstants.LightTransform, XMMatrixTranspose(lightTransform));
+    // -------------------------------------------------------------------------------------
+
+
+
     memcpy(mMappedPassCB, &passConstants, sizeof(PassConstants));
     //  렌더 배칭(Render Batching)의 기초! 모든 액터를 무식하게 다 그리지 않고 필터링합니다. 
     mInstanceCountToDraw = 0; // 이번 프레임에 그려야 할 인스턴스 카운트를 0으로 초기화합니다.
@@ -296,6 +345,9 @@ void D3D12Renderer::Draw()
 {
     mCommandAllocator->Reset();
     mCommandList->Reset(mCommandAllocator.Get(), mPSO.Get());
+
+    //  모니터에 진짜 세상을 그리기 전에, 먼저 "태양의 시점"에서 그림자 텍스처를 한 번 구워냅니다! 
+    RenderShadows();
 
     // 1. 3D 씬을 임시 도화지(Ping)에 렌더링합니다.
     RenderScene();
@@ -336,18 +388,23 @@ bool D3D12Renderer::BuildRootSignature()
     CD3DX12_DESCRIPTOR_RANGE cbvPassTable;
     cbvPassTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 0); // b0
 
-
-    // 3번 조항: 텍스처 (t0) - 서랍장 형태
-    CD3DX12_DESCRIPTOR_RANGE srvTable;
-    srvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0); // t0
-    // 이제 고유 데이터는 CBV(상수 버퍼)가 아니라 SRV(배열 버퍼)로 들어옵니다! 
     CD3DX12_DESCRIPTOR_RANGE srvInstanceTable;
     srvInstanceTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 1); // t1 (Instance Array)
 
-    CD3DX12_ROOT_PARAMETER rootParameters[3] = {};
-    rootParameters[0].InitAsDescriptorTable(1, &cbvPassTable);
-    rootParameters[1].InitAsDescriptorTable(1, &srvTable);
-    rootParameters[2].InitAsDescriptorTable(1, &srvInstanceTable); // t1 연결!
+    // 3번 조항: 텍스처 (t0) - 서랍장 형태
+    CD3DX12_DESCRIPTOR_RANGE srvTextureTable;
+    srvTextureTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0); // t0
+    // 이제 고유 데이터는 CBV(상수 버퍼)가 아니라 SRV(배열 버퍼)로 들어옵니다! 
+
+    //  셰이더가 섀도우 맵 텍스처를 읽어올 수 있도록 t2 슬롯을 새로 계약서에 파줍니다! 
+    CD3DX12_DESCRIPTOR_RANGE srvShadowTable;
+    srvShadowTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 2); // t2 (그림자 텍스처용)
+
+    CD3DX12_ROOT_PARAMETER rootParameters[4] = {}; // 배열의 크기를 4칸으로 정확히 할당하여 메모리 초과 에러를 막습니다.
+    rootParameters[0].InitAsDescriptorTable(1, &cbvPassTable); // 0번 파라미터: 공통 상수 버퍼 (b0)를 묶습니다.
+    rootParameters[1].InitAsDescriptorTable(1, &srvInstanceTable); // 1번 파라미터: 인스턴스 위치 배열 버퍼 (t1)를 묶습니다.
+    rootParameters[2].InitAsDescriptorTable(1, &srvTextureTable); // 2번 파라미터: 표면 색상 텍스처 (t0)를 묶습니다.
+    rootParameters[3].InitAsDescriptorTable(1, &srvShadowTable); // 3번 파라미터: 섀도우 맵 깊이 텍스처 (t2)를 묶습니다.
    
 
     // 텍스처를 픽셀에 입힐 때 점으로 찍을지(Point), 부드럽게 뭉갤지(Linear) 결정하는 '샘플러'를 추가합니다.
@@ -366,9 +423,32 @@ bool D3D12Renderer::BuildRootSignature()
     sampler.RegisterSpace = 0;
     sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL; // 픽셀 셰이더에서만 사용
 
-    CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc;
-    // 파라미터 2개, 샘플러 1개를 등록하여 최종 루트 시그니처를 초기화합니다! 합쳐서 3개
-    rootSigDesc.Init(3, rootParameters, 1, &sampler, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+    //  섀도우 맵 전용 특수 샘플러(비교 샘플러)입니다! 
+    // 텍스처를 읽을 때 자동으로 픽셀 깊이와 그림자 깊이를 비교(Less Equal)해서 0.0(그림자) 또는 1.0(빛)을 반환해 줍니다. 
+    D3D12_STATIC_SAMPLER_DESC shadowSampler = {};
+    shadowSampler.Filter = D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT; // 비교(Comparison) 필터링
+    shadowSampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_BORDER; // 섀도우 맵 바깥은 그림자가 안 지도록 경계색 처리
+    shadowSampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    shadowSampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    shadowSampler.MipLODBias = 0;
+    shadowSampler.MaxAnisotropy = 16;
+    shadowSampler.ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL; // 내 깊이가 그림자보다 작거나 같으면 통과!
+    shadowSampler.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK; // 테두리는 까맣게(그림자 없음)
+    shadowSampler.MinLOD = 0;
+    shadowSampler.MaxLOD = D3D12_FLOAT32_MAX;
+    shadowSampler.ShaderRegister = 1; //  s1 슬롯 할당
+    shadowSampler.RegisterSpace = 0;
+    shadowSampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    // 샘플러 배열을 2개로 묶어줍니다.
+    D3D12_STATIC_SAMPLER_DESC samplers[2] = { sampler, shadowSampler };
+
+
+
+
+    CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc; // DX12 루트 시그니처 스펙 구조체를 선언합니다.
+    // 파라미터 개수를 4로, 샘플러 개수를 2로 늘리고, 아까 위에서 2개로 묶어둔 samplers 배열 전체를 넘겨 계약서를 완성합니다!
+    rootSigDesc.Init(4, rootParameters, 2, samplers, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
 
     ComPtr<ID3DBlob> serializedRootSig = nullptr;
     ComPtr<ID3DBlob> errorBlob = nullptr;
@@ -472,6 +552,28 @@ bool D3D12Renderer::BuildPSO() // PSO 구축
     psoDesc.SampleDesc.Count = 1;
 
     hr = mDevice->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&mPSO));
+
+    // ---  오직 그림자(깊이)만 계산하는 섀도우 전용 파이프라인(mPsoShadow)을 굽습니다!  ---
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC shadowPsoDesc = psoDesc; // 기본 설정을 그대로 복사해 옵니다.
+
+    // 핵심 1: 그림자 구울 때는 색상을 안 칠하므로 픽셀 셰이더(PS)를 꺼버립니다. (엄청난 속도 향상)
+    shadowPsoDesc.PS = { nullptr, 0 };
+    // 핵심 2: RTV(색상 도화지)도 안 쓰므로 꺼버립니다. 오직 DSV(Z-버퍼)만 씁니다.
+    shadowPsoDesc.RTVFormats[0] = DXGI_FORMAT_UNKNOWN;
+    shadowPsoDesc.NumRenderTargets = 0;
+
+    // 핵심 3: Shadow Acne (그림자 표면에 줄무늬가 생기는 그래픽 깨짐 현상)를 방지하기 위해, 
+    // 래스터라이저 단계에서 깊이 값(Z)을 아주 살짝 뒤로 밀어버리는 Bias(편향)를 적용합니다.
+    shadowPsoDesc.RasterizerState.DepthBias = 100000;
+    shadowPsoDesc.RasterizerState.DepthBiasClamp = 0.0f;
+    shadowPsoDesc.RasterizerState.SlopeScaledDepthBias = 1.0f;
+
+    // 섀도우 전용 파이프라인(mPsoShadow)을 생성합니다!
+    mDevice->CreateGraphicsPipelineState(&shadowPsoDesc, IID_PPV_ARGS(&mPsoShadow));
+    // ---------------------------------------------------------------------------------------------------
+
+
+
     return SUCCEEDED(hr);
 }
 
@@ -480,14 +582,14 @@ bool D3D12Renderer::BuildPSO() // PSO 구축
 bool D3D12Renderer::BuildConstantBuffers()
 {
     D3D12_DESCRIPTOR_HEAP_DESC cbvHeapDesc;
-    // 칸 개수를 6개로 늘립니다! (Pass, 바닥텍스처, 명부배열, 도화지0, 도화지1, 도화지2)
-    cbvHeapDesc.NumDescriptors = 6;
+    //  섀도우 맵 뷰(SRV)를 한 장 더 꽂기 위해 서랍장 칸을 7칸으로 늘립니다! 
+    cbvHeapDesc.NumDescriptors = 7;
     cbvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     cbvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     cbvHeapDesc.NodeMask = 0;
     mDevice->CreateDescriptorHeap(&cbvHeapDesc, IID_PPV_ARGS(&mCbvHeap));
 
-    //상수버퍼 사이즈 계산
+    //   [0번 칸]: 상수 버퍼 (CBV) 세팅  
     UINT passCBByteSize = CalcConstantBufferByteSize(sizeof(PassConstants));
 
     CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_UPLOAD);
@@ -504,23 +606,7 @@ bool D3D12Renderer::BuildConstantBuffers()
     CD3DX12_CPU_DESCRIPTOR_HANDLE hDescriptor(mCbvHeap->GetCPUDescriptorHandleForHeapStart());
     mDevice->CreateConstantBufferView(&passCbvDesc, hDescriptor);
 
-    hDescriptor.Offset(1, mCbvSrvUavDescriptorSize);
-
-    // 중간에 텍스처 SRV(뷰)를 생성하는 핵심 부분만 아래와 같이 변경됩니다!
-    D3D12_SHADER_RESOURCE_VIEW_DESC texSrvDesc = {}; // 뷰 스펙 초기화
-    texSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING; // 기본 매핑
-
-    // 렌더러가 들고 있던 변수 대신, 분리된 텍스처 객체의 포인터를 타고 들어가 텍스처의 포맷 형식을 알아냅니다.
-    texSrvDesc.Format = mDefaultTexture->GetResource()->GetDesc().Format;
-
-    texSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D; // 2D 텍스처
-    texSrvDesc.Texture2D.MostDetailedMip = 0; // 최대 화질
-    texSrvDesc.Texture2D.MipLevels = 1; // 1장
-    texSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f; // 기본 클램프
-
-    // 디바이스에 뷰를 생성하라고 지시할 때도, 텍스처 객체에서 실제 메모리 주소(Get)를 빼옵니다.
-    mDevice->CreateShaderResourceView(mDefaultTexture->GetResource().Get(), &texSrvDesc, hDescriptor);
-
+    //   [1번 칸]: 인스턴스 버퍼(큐브 위치 데이터) 세팅 (여기가 텍스처보다 먼저 와야 합니다!!)  
     hDescriptor.Offset(1, mCbvSrvUavDescriptorSize);
 
     UINT instanceBufferSize = sizeof(InstanceData) * NumInstances;
@@ -541,7 +627,19 @@ bool D3D12Renderer::BuildConstantBuffers()
 
     mDevice->CreateShaderResourceView(mInstanceBuffer.Get(), &instSrvDesc, hDescriptor);
 
-    // 임시 도화지 3장의 뷰(SRV)를 연속해서 서랍장에 등록합니다. (인덱스 3, 4, 5번)
+    //   [2번 칸]: 텍스처 이미지 세팅  
+    hDescriptor.Offset(1, mCbvSrvUavDescriptorSize);
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC texSrvDesc = {};
+    texSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    texSrvDesc.Format = mDefaultTexture->GetResource()->GetDesc().Format;
+    texSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    texSrvDesc.Texture2D.MostDetailedMip = 0;
+    texSrvDesc.Texture2D.MipLevels = 1;
+    texSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+    mDevice->CreateShaderResourceView(mDefaultTexture->GetResource().Get(), &texSrvDesc, hDescriptor);
+
+    //   [3~5번 칸]: 임시 도화지 3장(Offscreen) 세팅  
     for (int i = 0; i < OffscreenBufferCount; ++i)
     {
         hDescriptor.Offset(1, mCbvSrvUavDescriptorSize);
@@ -554,6 +652,19 @@ bool D3D12Renderer::BuildConstantBuffers()
         offscreenSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
         mDevice->CreateShaderResourceView(mOffscreenTex[i].Get(), &offscreenSrvDesc, hDescriptor);
     }
+
+    //   [6번 칸]: 섀도우 맵 뷰 세팅  
+    hDescriptor.Offset(1, mCbvSrvUavDescriptorSize);
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC shadowSrvDesc = {};
+    shadowSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    shadowSrvDesc.Format = DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
+    shadowSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    shadowSrvDesc.Texture2D.MostDetailedMip = 0;
+    shadowSrvDesc.Texture2D.MipLevels = 1;
+    shadowSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+
+    mDevice->CreateShaderResourceView(mShadowMap.Get(), &shadowSrvDesc, hDescriptor);
 
     return true;
 }
@@ -701,34 +812,40 @@ bool D3D12Renderer::BuildPostProcessPipelines()
 //   [구조 분화] 3D 오브젝트 렌더링을 전담하는 함수입니다.  
 void D3D12Renderer::RenderScene()
 {
-    // 대상 도화지를 '0번 임시 도화지(Ping)'로 설정합니다.
-    CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
-        mOffscreenTex[0].Get(),
-        D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_RENDER_TARGET);
-    mCommandList->ResourceBarrier(1, &barrier);
+    CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(mOffscreenTex[0].Get(), D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_RENDER_TARGET); // 배리어
+    mCommandList->ResourceBarrier(1, &barrier); // 적용
 
-    CD3DX12_CPU_DESCRIPTOR_HANDLE offscreenRtv(mOffscreenRtvHeap->GetCPUDescriptorHandleForHeapStart());
-    CD3DX12_CPU_DESCRIPTOR_HANDLE dsvHandle(mDsvHeap->GetCPUDescriptorHandleForHeapStart());
+    CD3DX12_CPU_DESCRIPTOR_HANDLE offscreenRtv(mOffscreenRtvHeap->GetCPUDescriptorHandleForHeapStart()); // 임시 도화지 안경
+    CD3DX12_CPU_DESCRIPTOR_HANDLE dsvHandle(mDsvHeap->GetCPUDescriptorHandleForHeapStart()); // 화면 깊이 안경
 
-    const float clearColor[] = { 0.39f, 0.58f, 0.93f, 1.0f };
-    mCommandList->ClearRenderTargetView(offscreenRtv, clearColor, 0, nullptr);
-    mCommandList->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, nullptr);
+    const float clearColor[] = { 0.39f, 0.58f, 0.93f, 1.0f }; // 하늘색 배경
+    mCommandList->ClearRenderTargetView(offscreenRtv, clearColor, 0, nullptr); // 도화지 밀기
+    mCommandList->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, nullptr); // 화면 깊이 밀기
 
-    mCommandList->OMSetRenderTargets(1, &offscreenRtv, FALSE, &dsvHandle);
-    mCommandList->RSSetViewports(1, &mViewport);
-    mCommandList->RSSetScissorRects(1, &mScissorRect);
+    mCommandList->OMSetRenderTargets(1, &offscreenRtv, FALSE, &dsvHandle); // 타겟 장착
+    mCommandList->RSSetViewports(1, &mViewport); // 모니터 해상도 뷰포트
+    mCommandList->RSSetScissorRects(1, &mScissorRect); // 시저
 
-    ID3D12DescriptorHeap* descriptorHeaps[] = { mCbvHeap.Get() };
-    mCommandList->SetDescriptorHeaps(_countof(descriptorHeaps), descriptorHeaps);
+    ID3D12DescriptorHeap* descriptorHeaps[] = { mCbvHeap.Get() }; // 공용 서랍장
+    mCommandList->SetDescriptorHeaps(_countof(descriptorHeaps), descriptorHeaps); // 서랍 묶기
 
-    mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
+    mCommandList->SetGraphicsRootSignature(mRootSignature.Get()); // 통신 계약서 제출
 
-    CD3DX12_GPU_DESCRIPTOR_HANDLE heapStart(mCbvHeap->GetGPUDescriptorHandleForHeapStart());
-    mCommandList->SetGraphicsRootDescriptorTable(0, CD3DX12_GPU_DESCRIPTOR_HANDLE(heapStart, 0, mCbvSrvUavDescriptorSize));
-    mCommandList->SetGraphicsRootDescriptorTable(1, CD3DX12_GPU_DESCRIPTOR_HANDLE(heapStart, 1, mCbvSrvUavDescriptorSize));
-    mCommandList->SetGraphicsRootDescriptorTable(2, CD3DX12_GPU_DESCRIPTOR_HANDLE(heapStart, 2, mCbvSrvUavDescriptorSize));
+    // 기본 파이프라인(mPSO)을 장착합니다. (색상과 조명을 전부 칠하는 진짜 그리기 공정)
+    mCommandList->SetPipelineState(mPSO.Get());
 
-    mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    CD3DX12_GPU_DESCRIPTOR_HANDLE heapStart(mCbvHeap->GetGPUDescriptorHandleForHeapStart()); // 서랍장 주소
+    mCommandList->SetGraphicsRootDescriptorTable(0, CD3DX12_GPU_DESCRIPTOR_HANDLE(heapStart, 0, mCbvSrvUavDescriptorSize)); // 0번 칸: 카메라 정보
+    mCommandList->SetGraphicsRootDescriptorTable(1, CD3DX12_GPU_DESCRIPTOR_HANDLE(heapStart, 1, mCbvSrvUavDescriptorSize)); // 1번 칸: 100개 상자 위치
+    mCommandList->SetGraphicsRootDescriptorTable(2, CD3DX12_GPU_DESCRIPTOR_HANDLE(heapStart, 2, mCbvSrvUavDescriptorSize)); // 2번 칸: 큐브 표면 텍스처 이미지
+
+    // 방금 RenderShadow() 함수에서 구워낸 '완성된 그림자 텍스처(섀도우 맵)' 뷰를 3번 칸(t2)에 쏙 꽂아줍니다! 
+   // 이렇게 하면 셰이더가 이 텍스처를 읽고 픽셀을 까맣게 칠해버립니다.
+    mCommandList->SetGraphicsRootDescriptorTable(3, CD3DX12_GPU_DESCRIPTOR_HANDLE(heapStart, 6, mCbvSrvUavDescriptorSize));
+
+
+
+    mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST); // 삼각형 그리기
 
 
     //  렌더러가 들고 있던 뷰 변수 대신, 메시 객체에게 뷰를 꺼내 달라고 요청합니다. 
@@ -883,3 +1000,112 @@ void D3D12Renderer::RenderPostProcess()
         mCommandList->ResourceBarrier(1, &barrier);
     }
 }
+
+
+//  섀도우 맵(깊이 텍스처) 전용 리소스를 생성하는 함수 전체 구현부입니다. 
+bool D3D12Renderer::BuildShadowMap()
+{ // 함수 시작
+    D3D12_RESOURCE_DESC texDesc = {}; // 텍스처 스펙을 준비합니다.
+    texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; // 2D 평면 이미지입니다.
+    texDesc.Alignment = 0; // 정렬 기본값입니다.
+    texDesc.Width = 2048; // 그림자의 퀄리티를 좌우하는 가로 해상도입니다. (크면 선명, 작으면 계단 현상)
+    texDesc.Height = 2048; // 세로 해상도입니다.
+    texDesc.DepthOrArraySize = 1; // 1장입니다.
+    texDesc.MipLevels = 1; // 밉맵 사용 안 합니다.
+
+    //  핵심: 그림자를 기록할 때는 깊이 포맷(DSV)으로 쓰고, 나중에 읽을 때는 이미지 포맷(SRV)으로 써야 합니다.
+    // 두 가지 용도로 다 쓸 수 있게 '타입리스(TYPELESS)' 포맷으로 텍스처를 생성합니다! 
+    texDesc.Format = DXGI_FORMAT_R24G8_TYPELESS;
+
+    texDesc.SampleDesc.Count = 1; // 안티앨리어싱 안 씁니다.
+    texDesc.SampleDesc.Quality = 0; // 안티앨리어싱 품질입니다.
+    texDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN; // 기본 배치입니다.
+    texDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL; // 이 텍스처에 깊이 기록을 허용합니다.
+
+    D3D12_CLEAR_VALUE optClear; // 그림자 도화지를 싹 밀어버릴 기본값입니다.
+    optClear.Format = DXGI_FORMAT_D24_UNORM_S8_UINT; // 지울 때는 깊이 전용 포맷을 명시해야 합니다.
+    optClear.DepthStencil.Depth = 1.0f; // 가장 먼 거리인 1.0으로 가득 채웁니다.
+    optClear.DepthStencil.Stencil = 0; // 스텐실은 0으로 비웁니다.
+
+    CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_DEFAULT); // 가장 빠른 GPU VRAM에 위치시킵니다.
+    // 실제 섀도우 맵 메모리를 할당합니다. 상태는 'GENERIC_READ'로 두어 셰이더가 대기하게 합니다.
+    HRESULT hr = mDevice->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &texDesc, D3D12_RESOURCE_STATE_GENERIC_READ, &optClear, IID_PPV_ARGS(&mShadowMap));
+    if (FAILED(hr)) return false; // 생성 실패 시 반환합니다.
+
+    // 이 텍스처에 태양 시점의 깊이를 기록하려면 전용 DSV(깊이) 서랍장이 1칸 필요합니다.
+    D3D12_DESCRIPTOR_HEAP_DESC dsvHeapDesc;
+    dsvHeapDesc.NumDescriptors = 1; // 1칸짜리 서랍장입니다.
+    dsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV; // DSV 용도입니다.
+    dsvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE; // 셰이더 숨김입니다.
+    dsvHeapDesc.NodeMask = 0; // 단일 GPU입니다.
+    mDevice->CreateDescriptorHeap(&dsvHeapDesc, IID_PPV_ARGS(&mShadowDsvHeap)); // 전용 서랍장을 만듭니다.
+
+    D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc = {}; // DSV 안경 스펙입니다.
+    dsvDesc.Flags = D3D12_DSV_FLAG_NONE; // 기본 플래그입니다.
+    dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D; // 2D 텍스처입니다.
+    dsvDesc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT; // 아까 만든 TYPELESS 메모리를 깊이 포맷 안경으로 해석하여 씁니다!
+    dsvDesc.Texture2D.MipSlice = 0; // 첫 번째 밉맵입니다.
+
+    // 완성된 DSV 안경을 텍스처에 씌워 아까 만든 1칸짜리 전용 서랍장에 꽂아둡니다.
+    mDevice->CreateDepthStencilView(mShadowMap.Get(), &dsvDesc, mShadowDsvHeap->GetCPUDescriptorHandleForHeapStart());
+
+    return true; // 무사히 생성 완료!
+} // 섀도우 맵 함수 끝
+
+
+//   [신규 함수] 플레이어 눈이 아닌 "태양의 시점"으로 오직 물체의 깊이(거리)만 텍스처에 기록하는 그림자 그리기 전담 함수입니다!  
+void D3D12Renderer::RenderShadows()
+{ // 함수 시작
+    // 방금 전까지 읽기 상태였던 섀도우 맵 텍스처를 "깊이(Z버퍼) 기록 모드"로 바꾸라고 차단기(배리어)를 내립니다.
+    CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(mShadowMap.Get(), D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    mCommandList->ResourceBarrier(1, &barrier); // 명령서에 올립니다.
+
+    // 섀도우 맵 전용 서랍장에서 DSV(깊이) 안경 주소를 꺼내옵니다.
+    CD3DX12_CPU_DESCRIPTOR_HANDLE dsvHandle(mShadowDsvHeap->GetCPUDescriptorHandleForHeapStart());
+
+    // 이전에 기록된 옛날 그림자들을 지우고 도화지를 1.0(가장 멈)으로 깨끗하게 밉니다.
+    mCommandList->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, nullptr);
+
+    // 중요: 섀도우 맵은 색상을 칠할 필요가 없으므로 RTV(색상 도화지)는 nullptr로 비워두고, 오직 DSV(깊이 도화지)만 타겟으로 묶습니다!
+    mCommandList->OMSetRenderTargets(0, nullptr, FALSE, &dsvHandle);
+
+    // 모니터 해상도가 아니라 2048x2048 사이즈인 그림자 전용 뷰포트와 자르기 영역을 장착합니다.
+    mCommandList->RSSetViewports(1, &mShadowViewport);
+    mCommandList->RSSetScissorRects(1, &mShadowScissorRect);
+
+    // 공용 서랍장(행렬 데이터)을 묶어줍니다.
+    ID3D12DescriptorHeap* descriptorHeaps[] = { mCbvHeap.Get() };
+    mCommandList->SetDescriptorHeaps(_countof(descriptorHeaps), descriptorHeaps);
+
+    mCommandList->SetGraphicsRootSignature(mRootSignature.Get()); // 통신 계약서를 들이밉니다.
+
+    //   핵심: 일반 렌더링용 공장 라인(mPSO)이 아니라, 색칠 작업을 모두 건너뛰고 깊이만 고속으로 찍어내는 "그림자 전용 공장 라인(mPsoShadow)"을 가동합니다!  
+    mCommandList->SetPipelineState(mPsoShadow.Get());
+
+    CD3DX12_GPU_DESCRIPTOR_HANDLE heapStart(mCbvHeap->GetGPUDescriptorHandleForHeapStart());
+    mCommandList->SetGraphicsRootDescriptorTable(0, CD3DX12_GPU_DESCRIPTOR_HANDLE(heapStart, 0, mCbvSrvUavDescriptorSize)); // 카메라 행렬 꽂기 (이번엔 태양 시점이 담겨 있음)
+    mCommandList->SetGraphicsRootDescriptorTable(1, CD3DX12_GPU_DESCRIPTOR_HANDLE(heapStart, 1, mCbvSrvUavDescriptorSize)); // 100개 큐브 위치 행렬 꽂기
+    //   [기존 코드 삭제] (텍스처 이미지는 깊이만 잴 때는 필요 없으므로 2번 칸은 묶지 않습니다.) <-- 이 주석을 지워주세요!  
+
+    //   [추가점] 치명적 버그 수정! 그림자 셰이더가 텍스처를 안 쓰더라도, 계약서(RootSignature)의 4칸은 무조건 다 채워야 GPU가 뻗지 않습니다!  
+    // 단, 그림자 맵(t2)은 현재 '쓰기 모드'이므로 '읽기 모드'로 꽂으면 충돌이 납니다. 따라서 빈 2번(t0)과 3번(t2) 칸에 모두 임시 더미로 일반 텍스처를 꽂아 에러를 우회합니다!
+    mCommandList->SetGraphicsRootDescriptorTable(2, CD3DX12_GPU_DESCRIPTOR_HANDLE(heapStart, 2, mCbvSrvUavDescriptorSize)); // 2번 칸(t0) 에 일반 텍스처 꽂기
+    mCommandList->SetGraphicsRootDescriptorTable(3, CD3DX12_GPU_DESCRIPTOR_HANDLE(heapStart, 2, mCbvSrvUavDescriptorSize)); // 3번 칸(t2) 에도 일반 텍스처 꽂기 (충돌 방지용)
+
+    mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST); // 삼각형 연결 세팅
+
+    D3D12_VERTEX_BUFFER_VIEW vbv = mDefaultBoxMesh->GetVertexBufferView(); // 큐브 정점 주입
+    mCommandList->IASetVertexBuffers(0, 1, &vbv);
+    D3D12_INDEX_BUFFER_VIEW ibv = mDefaultBoxMesh->GetIndexBufferView(); // 큐브 인덱스 주입
+    mCommandList->IASetIndexBuffer(&ibv);
+
+    if (mInstanceCountToDraw > 0) // 그려야 할 상자가 있다면
+    { // 조건문 시작
+        // 단 1번의 인스턴싱 드로우 콜로 100개의 상자를 태양 시점 텍스처에 깊이값으로 고속으로 찍어냅니다!
+        mCommandList->DrawIndexedInstanced(mDefaultBoxMesh->GetIndexCount(), mInstanceCountToDraw, 0, 0, 0);
+    } // 조건문 끝
+
+    // 기록이 끝난 섀도우 맵 텍스처를, 픽셀 셰이더가 "그림자가 졌는지 읽어갈 수 있도록" 읽기 전용 상태로 복구하는 배리어를 내립니다.
+    barrier = CD3DX12_RESOURCE_BARRIER::Transition(mShadowMap.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_GENERIC_READ);
+    mCommandList->ResourceBarrier(1, &barrier); // 명령서 적용
+} // 그림자 렌더 함수 끝

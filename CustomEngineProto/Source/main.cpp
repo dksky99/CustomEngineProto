@@ -82,30 +82,44 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 
     //  렌더러가 그림을 그리기 전에, 개발자(우리)가 씬을 1개 만들고 100개의 큐브 액터를 직접 배치하는 레벨 디자인을 수행합니다! 
     Scene scene; // 월드(맵)를 담당할 씬 객체를 메모리에 올립니다.
+    //   [핵심 변경점: 태양계(Solar System) 레벨 디자인] 기존의 100개 큐브 루프를 지우고 계층 구조를 테스트합니다!  
 
-    //  상용 엔진처럼 액터 생성 -> 컴포넌트 생성 -> 메시 씌우기 -> 액터 조립의 과정을 거칩니다! 
-    for (int i = 0; i < 10; ++i) // 루프 시작
-    {
-        for (int j = 0; j < 10; ++j) // 루프 시작
-        {
-            int index = i * 10 + j; // 인덱스 계산
-            float xPos = (j - 4.5f) * 2.0f; // X 위치 계산
-            float zPos = (i - 4.5f) * 2.0f; // Z 위치 계산
+        // 1. 거대한 중앙의 태양(Sun)을 만듭니다.
+    std::shared_ptr<Actor> sunActor = std::make_shared<Actor>(); // 태양 액터를 만듭니다.
+    sunActor->GetTransform()->Scale = { 2.0f, 2.0f, 2.0f }; // 크기를 2배로 키웁니다.
+    std::shared_ptr<MeshComponent> sunMesh = std::make_shared<MeshComponent>(); // 메시 부품을 만듭니다.
+    sunMesh->SetMesh(renderer.GetDefaultMesh()); // 껍데기를 씌웁니다.
+    sunMesh->SetMaterial(renderer.GetDefaultMaterial()); // 재질을 씌웁니다.
+    sunActor->AddComponent(sunMesh); // 몸통에 조립합니다.
+    scene.AddActor(sunActor); // 씬에 올립니다.
 
-            std::shared_ptr<CubeActor> cube = std::make_shared<CubeActor>(); // 빈 액터를 만듭니다.
-            cube->CubeIndex = index; // 인덱스 부여
-            cube->GetTransform()->Position = { xPos, 0.0f, zPos }; // 초기 위치 부여
+    // 2. 태양을 공전하는 지구(Earth)를 만듭니다.
+    std::shared_ptr<Actor> earthActor = std::make_shared<Actor>(); // 지구 액터를 만듭니다.
+    earthActor->GetTransform()->Scale = { 0.5f, 0.5f, 0.5f }; // 크기를 0.5배로 줄입니다.
+    earthActor->GetTransform()->Position = { 5.0f, 0.0f, 0.0f }; //   중요: 태양의 중심에서부터 X축으로 5.0만큼 거리를 벌려줍니다! (공전 반경)  
+    std::shared_ptr<MeshComponent> earthMesh = std::make_shared<MeshComponent>(); // 메시 부품을 만듭니다.
+    earthMesh->SetMesh(renderer.GetDefaultMesh()); // 껍데기를 씌웁니다.
+    earthMesh->SetMaterial(renderer.GetDefaultMaterial()); // 재질을 씌웁니다.
+    earthActor->AddComponent(earthMesh); // 몸통에 조립합니다.
 
-            // 1. 빈 메시 컴포넌트(부품)를 하나 메모리에 찍어냅니다.
-            std::shared_ptr<MeshComponent> meshComp = std::make_shared<MeshComponent>();
-            // 2. 렌더러가 만들어둔 기본 정육면체 모델 데이터의 포인터를 얻어와 부품에 쏙 끼웁니다.
-            meshComp->SetMesh(renderer.GetDefaultMesh());
-            // 3. 모델 데이터가 들어간 이 껍데기 부품을 액터의 몸에 장착합니다!
-            cube->AddComponent(meshComp);
+    // ★   [계층 구조 연결 1] 지구의 부모를 태양으로 설정합니다!   ★
+    earthActor->GetTransform()->SetParent(sunActor->GetTransform());
+    scene.AddActor(earthActor); // 씬에 올립니다.
 
-            scene.AddActor(cube); // 모든 조립이 끝난 액터를 씬 명부에 올려줍니다.
-        } // 루프 끝
-    } // 루프 끝
+    // 3. 지구를 공전하는 달(Moon)을 만듭니다.
+    std::shared_ptr<Actor> moonActor = std::make_shared<Actor>(); // 달 액터를 만듭니다.
+    moonActor->GetTransform()->Scale = { 0.2f, 0.2f, 0.2f }; // 크기를 0.2배로 아주 작게 만듭니다.
+    moonActor->GetTransform()->Position = { 2.0f, 0.0f, 0.0f }; //   중요: 지구의 중심에서부터 X축으로 2.0만큼 거리를 벌려줍니다!  
+    std::shared_ptr<MeshComponent> moonMesh = std::make_shared<MeshComponent>(); // 메시 부품을 만듭니다.
+    moonMesh->SetMesh(renderer.GetDefaultMesh()); // 껍데기를 씌웁니다.
+    moonMesh->SetMaterial(renderer.GetDefaultMaterial()); // 재질을 씌웁니다.
+    moonActor->AddComponent(moonMesh); // 몸통에 조립합니다.
+
+    // ★   [계층 구조 연결 2] 달의 부모를 지구로 설정합니다!   ★
+    moonActor->GetTransform()->SetParent(earthActor->GetTransform());
+    scene.AddActor(moonActor); // 씬에 올립니다.
+
+    // -----------------------------------------------------------------------------------
 
     
     
@@ -132,9 +146,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     scene.AddActor(cameraActor);
     // -----------------------------------------------------------------------------------
 
-     // ---  텅 빈 하늘에 태양(DirectionalLightActor)을 스폰시켜 씬 명부에 올려줍니다!  ---
-    std::shared_ptr<DirectionalLightActor> sunActor = std::make_shared<DirectionalLightActor>();
-    scene.AddActor(sunActor); // 이제 매 프레임 scene.Update()가 돌 때 태양도 알아서 회전합니다!
+     // --- 태양빛(Directional Light) 세팅 ---
+    std::shared_ptr<DirectionalLightActor> worldLight = std::make_shared<DirectionalLightActor>(); // 조명 액터 생성
+    scene.AddActor(worldLight); // 씬에 조명 등록
     // -----------------------------------------------------------------------------------
 
 
@@ -156,6 +170,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             
             //   1단계: 이번 프레임의 마우스/키보드 입력을 전역 통제 센터에 수집합니다!  
             InputManager::GetInstance().Update();
+
+
+            //   [우주 시뮬레이션] 각 행성을 제자리에서 자전(회전)시킵니다!  
+           // 태양(Sun)을 자전시킵니다. (부모인 태양이 돌면 자식인 지구가 우주 공간을 공전하게 됩니다!)
+            sunActor->GetTransform()->Rotation.y += timer.DeltaTime() * 0.5f;
+
+            // 지구(Earth)를 자전시킵니다. (지구가 돌면 자식인 달이 지구를 중심으로 공전하게 됩니다!)
+            earthActor->GetTransform()->Rotation.y += timer.DeltaTime() * 2.0f;
+
+            // 달(Moon)도 자기 자신을 빠르게 자전시킵니다.
+            moonActor->GetTransform()->Rotation.y += timer.DeltaTime() * 5.0f;
+            // -----------------------------------------------------------------------------------
+
 
             //   2단계: 씬 갱신! (이때 카메라 액터 안에 달린 CameraComponent도 씬을 통해 자동으로 Update 됩니다!)  
             scene.Update(timer.DeltaTime());

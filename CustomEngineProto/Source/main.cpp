@@ -31,6 +31,9 @@
 //   [추가점] 흩어져 있던 마우스/키보드 입력을 처리할 중앙 통제실 헤더를 포함합니다!  
 #include "Framework/Core/InputManager.h" 
 
+//  씬에 배치할 태양(Directional Light) 액터의 헤더를 포함합니다! 
+#include "Game/DirectionalLightActor.h" 
+
 // 윈도우에서 발생하는 이벤트(키보드 입력, 마우스 클릭, 닫기 버튼 등)를 처리할 콜백 함수의 원형을 선언합니다.
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 
@@ -128,6 +131,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // 4. 조립이 끝난 카메라 액터를 게임 씬(명부)에 등록하여 관리망에 넣습니다.
     scene.AddActor(cameraActor);
     // -----------------------------------------------------------------------------------
+
+     // ---  텅 빈 하늘에 태양(DirectionalLightActor)을 스폰시켜 씬 명부에 올려줍니다!  ---
+    std::shared_ptr<DirectionalLightActor> sunActor = std::make_shared<DirectionalLightActor>();
+    scene.AddActor(sunActor); // 이제 매 프레임 scene.Update()가 돌 때 태양도 알아서 회전합니다!
+    // -----------------------------------------------------------------------------------
+
 
     MSG msg = { 0 }; // 운영체제로부터 받을 메시지를 담을 구조체를 0으로 비워 선언합니다.
 

@@ -135,6 +135,7 @@
   <ItemGroup>
     <ClCompile Include="Source\Framework\Components\CameraComponent.cpp" />
     <ClCompile Include="Source\Framework\Core\InputManager.cpp" />
+    <ClCompile Include="Source\Game\DirectionalLightActor.cpp" />
     <ClCompile Include="Source\Graphics\Resources\Material.cpp" />
     <ClCompile Include="Source\Graphics\Resources\Mesh.cpp" />
     <ClCompile Include="Source\Framework\Components\Component.cpp" />
@@ -150,7 +151,9 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Source\Framework\Components\CameraComponent.h" />
+    <ClInclude Include="Source\Framework\Components\LightComponent.h" />
     <ClInclude Include="Source\Framework\Core\InputManager.h" />
+    <ClInclude Include="Source\Game\DirectionalLightActor.h" />
     <ClInclude Include="Source\Graphics\Resources\Material.h" />
     <ClInclude Include="Source\Graphics\Resources\Mesh.h" />
     <ClInclude Include="Source\Framework\Components\Component.h" />

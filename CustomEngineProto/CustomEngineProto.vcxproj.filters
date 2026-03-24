@@ -70,6 +70,9 @@
     <ClCompile Include="Source\Framework\Components\CameraComponent.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
+    <ClCompile Include="Source\Game\DirectionalLightActor.cpp">
+      <Filter>소스 파일</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Source\Core\Timer\GameTimer.h">
@@ -115,6 +118,12 @@
       <Filter>헤더 파일</Filter>
     </ClInclude>
     <ClInclude Include="Source\Framework\Components\CameraComponent.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Framework\Components\LightComponent.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Game\DirectionalLightActor.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
   </ItemGroup>

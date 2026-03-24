@@ -14,6 +14,8 @@
 
 #include "Framework/Components/CameraComponent.h" //
 
+// 렌더러가 조명 부품을 인지할 수 있도록 헤더를 포함합니다. 
+#include "Framework/Components/LightComponent.h" 
 
 //  렌더러가 텍스처와 머티리얼을 생성하고 관리하기 위해 새 헤더들을 불러옵니다. 
 #include "Graphics/Resources/Texture.h" // 분리된 메시 구조체를 사용하기 위해 포함합니다.
@@ -255,6 +257,8 @@ void D3D12Renderer::Update(float deltaTime, Scene* scene, CameraComponent* camer
     // ====================================================================
     static float totalTime = 0.0f;
     totalTime += deltaTime;
+
+
     // 렌더러가 직접 계산하던 뷰와 투영 행렬을, 카메라 객체에게서 우아하게 꺼내옵니다. 
     XMMATRIX view = camera->GetView(); // 카메라가 세팅해둔 시점(View) 행렬을 받습니다.
     XMMATRIX proj = camera->GetProj(); // 카메라가 세팅해둔 원근감(Proj) 행렬을 받습니다.
@@ -263,37 +267,51 @@ void D3D12Renderer::Update(float deltaTime, Scene* scene, CameraComponent* camer
     PassConstants passConstants;
     XMStoreFloat4x4(&passConstants.ViewProj, XMMatrixTranspose(viewProj));
 
-    //  동적 조명(Dynamic Lighting) 시뮬레이션! 
-    // 시간에 따라 태양이 원을 그리며 도는 궤적을 계산합니다.
-    float sunSpeed = 0.5f; // 태양이 도는 속도입니다.
-    float sunX = cosf(totalTime * sunSpeed); // 시간에 따라 좌우(X축)로 움직입니다.
-    float sunY = sinf(totalTime * sunSpeed); // 시간에 따라 상하(Y축, 고도)로 움직입니다.
-    float sunZ = 0.5f; // 약간 비스듬하게 비추도록 Z축 고정값을 줍니다.
-
-    // 계산된 위치로 빛의 방향 벡터를 만듭니다. (빛이 쏟아지는 방향)
-    XMVECTOR lightDir = XMVectorSet(sunX, sunY, sunZ, 0.0f);
-    lightDir = XMVector3Normalize(lightDir); // 방향 벡터이므로 길이를 1로 정규화합니다.
-    XMStoreFloat3(&passConstants.LightDir, lightDir); // 상수 버퍼 구조체에 넣습니다.
-
-    // 태양의 고도(sunY)에 따라 빛의 색상과 밝기를 바꿉니다. (일몰/일출 효과)
-    // 태양이 가장 높을 때(sunY=1) 가장 밝고, 지평선 아래(sunY<0)로 떨어지면 어두워집니다.
-    float intensity = std::clamp(sunY + 0.2f, 0.0f, 1.0f); // 빛의 세기를 0.0 ~ 1.0 사이로 제한합니다.
-
-    // 약간의 노을 느낌을 주기 위해 빨간색(R)은 유지하고 초록(G), 파랑(B) 값을 조금 깎아냅니다.
-    passConstants.LightColor = { intensity, intensity * 0.9f, intensity * 0.8f, 1.0f };
 
     //  [ ] C++ 코드는 이 두 줄만 추가되면 완벽합니다! 
     passConstants.TotalTime = totalTime; // 현재 흐른 누적 시간을 셰이더에게 전달합니다. (UV를 움직일 때 사용)
     // 렌더러가 직접 들고 있던 위치 대신, 카메라 객체에게 "너 지금 3D 위치가 어디야?" 하고 물어서 위치값을 가져와 광택 연산용으로 포장합니다. 
     passConstants.EyePosW = camera->GetPosition();
 
-    // ---  [핵심 로직] 1. 태양(빛)의 눈으로 바라본 세상의 뷰와 원근 행렬을 만듭니다!  ---
+    //   [핵심 로직] 더 이상 렌더러가 수학 공식을 쓰지 않습니다! 
+   // 씬을 뒤져서 'LightComponent'를 단 녀석을 찾아 데이터를 그냥 받아오기만 합니다.  
+    XMVECTOR lightDir = XMVectorSet(0.0f, -1.0f, 0.0f, 0.0f); // 만약 태양이 없으면 기본 빛 방향은 아래입니다.
+    passConstants.LightColor = { 1.0f, 1.0f, 1.0f, 1.0f }; // 기본 색상은 흰색입니다.
 
-   // 태양의 위치를 계산합니다. (빛 방향의 정반대 편 50m 위 허공에 태양을 둡니다)
-    XMVECTOR lightPos = -lightDir * 50.0f;
-    XMVECTOR targetPos = XMVectorSet(0.0f, 0.0f, 0.0f, 0.0f); // 태양은 세상의 중심(원점)을 바라봅니다.
-    XMVECTOR lightUp = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f); // 태양의 위쪽 방향입니다.
-    XMMATRIX lightView = XMMatrixLookAtLH(lightPos, targetPos, lightUp); // 태양 시점의 View 행렬이 완성되었습니다!
+    const auto& actors = scene->GetActors(); // 씬 명부를 가져옵니다.
+    for (auto& actor : actors)
+    { // 루프 시작
+        auto lightComp = actor->GetComponent<LightComponent>(); // 액터 중에 조명 부품을 단 녀석이 있는지 검사합니다.
+        if (lightComp)
+        { // 만약 조명 부품을 찾았다면!
+            // 이 액터의 현재 회전각을 추출하여 3D 회전 행렬을 만듭니다.
+            XMMATRIX rotMat = XMMatrixRotationRollPitchYaw(actor->GetTransform()->Rotation.x, actor->GetTransform()->Rotation.y, actor->GetTransform()->Rotation.z);
+
+            // 회전 행렬에서 정면(Forward) 방향 화살표를 쏙 뽑아옵니다. 이것이 태양빛의 방향입니다!
+            lightDir = XMVector3TransformNormal(XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f), rotMat);
+            lightDir = XMVector3Normalize(lightDir); // 화살표 길이를 1로 맞춥니다.
+
+            // 부품에 기록된 최신 밝기 색상을 그대로 가져와 GPU에 쏠 택배 상자에 담습니다.
+            passConstants.LightColor = lightComp->LightColor;
+            break; // 메인 태양 하나만 찾으면 되므로 즉시 루프를 탈출합니다.
+        } // 조건문 끝
+    } // 루프 끝
+
+    XMStoreFloat3(&passConstants.LightDir, lightDir); // 찾아낸 최종 빛 방향을 GPU로 보냅니다.
+
+    // --- 그림자 투영 연산 ---
+    XMVECTOR lightPos = -lightDir * 50.0f; // 빛 방향 반대편 50m 위 허공에 태양 카메라를 둡니다.
+    XMVECTOR targetPos = XMVectorSet(0.0f, 0.0f, 0.0f, 0.0f); // 원점을 바라보게 합니다.
+
+    XMVECTOR lightUp = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f); // 태양 카메라의 윗방향은 기본 Y축(하늘)입니다.
+
+
+    //   [안전 장치 추가] 만약 태양이 머리 꼭대기(Y축과 평행)에 정면으로 떠 있다면 수학 공식(LookAt)이 고장나서 터집니다!
+    // 이때는 윗방향을 임시로 Z축(앞)으로 비틀어주어 에러를 방지합니다.  
+    if (fabsf(XMVectorGetY(lightDir)) > 0.99f)
+        lightUp = XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f);
+
+    XMMATRIX lightView = XMMatrixLookAtLH(lightPos, targetPos, lightUp); // 태양 뷰
 
     // 태양은 직사광선이므로 멀리 있다고 작게 보이지 않습니다. 따라서 직교 투영(Orthographic) 원근 행렬을 씁니다.
     // 40x40 크기의 빛기둥이 1m부터 100m 앞까지 일직선으로 내리꽂힙니다.
@@ -319,7 +337,7 @@ void D3D12Renderer::Update(float deltaTime, Scene* scene, CameraComponent* camer
     memcpy(mMappedPassCB, &passConstants, sizeof(PassConstants));
     //  렌더 배칭(Render Batching)의 기초! 모든 액터를 무식하게 다 그리지 않고 필터링합니다. 
     mInstanceCountToDraw = 0; // 이번 프레임에 그려야 할 인스턴스 카운트를 0으로 초기화합니다.
-    const auto& actors = scene->GetActors(); // 씬에서 모든 액터 배열을 가져옵니다.
+
 
     for (auto& actor : actors) // 세상의 모든 액터를 순회합니다.
     { // 루프 시작

@@ -19,12 +19,18 @@
 #include "Framework/Core/Scene.h" // 액터들을 담을 거대한 세상(맵) 객체입니다.
 #include "Framework/Core/Actor.h" // 씬에 스폰될 개별 물체 객체입니다.
 
-#include "Framework/Core/Camera.h" 
+
 
 #include "Game/CubeActor.h"
 
 //  액터에게 외형 부품을 달아주기 위해 메시 컴포넌트 헤더를 포함합니다. 
 #include "Framework/Components/MeshComponent.h" 
+
+#include "Framework/Components/CameraComponent.h" 
+
+//   [추가점] 흩어져 있던 마우스/키보드 입력을 처리할 중앙 통제실 헤더를 포함합니다!  
+#include "Framework/Core/InputManager.h" 
+
 // 윈도우에서 발생하는 이벤트(키보드 입력, 마우스 클릭, 닫기 버튼 등)를 처리할 콜백 함수의 원형을 선언합니다.
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 
@@ -105,11 +111,23 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     timer.Reset(); // 본격적인 렌더링 루프에 들어가기 직전, 타이머의 기준점을 현재 시간으로 초기화합니다.
 
    
-    // 3. 우리의 눈이 되어줄 카메라 객체를 생성하고 렌즈를 장착합니다! 
-    Camera camera;
-    // 시야각 45도, 창 비율에 맞는 원근감, 최소깊이 1.0, 최대깊이 1000.0 짜리 렌즈를 카메라에 끼웁니다.
-    camera.SetLens(0.25f * XM_PI, static_cast<float>(config.WindowWidth) / config.WindowHeight, 1.0f, 1000.0f);
-    //  ========================================================================= 
+    // --- [ECS 아키텍처 완성] 카메라를 '액터(Actor)'로 취급하여 씬에 조립해 넣습니다!  ---
+
+    // 1. 눈에 보이지 않는 텅 빈 투명 액터를 하나 메모리에 찍어냅니다. (이것이 상용 엔진의 CameraActor 입니다!)
+    std::shared_ptr<Actor> cameraActor = std::make_shared<Actor>();
+    cameraActor->GetTransform()->Position = { 0.0f, 15.0f, -15.0f }; // 공중에 살짝 띄웁니다.
+    cameraActor->GetTransform()->Rotation = { 0.7f, 0.0f, 0.0f }; // 밑의 큐브들을 내려다보게 살짝 고개를 숙여줍니다.
+
+    // 2. 화면을 찍어낼 렌즈 부품(CameraComponent)을 생성합니다.
+    std::shared_ptr<CameraComponent> cameraComp = std::make_shared<CameraComponent>();
+    cameraComp->SetLens(0.25f * XM_PI, static_cast<float>(config.WindowWidth) / config.WindowHeight, 1.0f, 1000.0f);
+
+    // 3. 조립 완료! 액터의 몸통에 카메라 부품을 부착합니다. (이 과정 덕분에 mOwner가 연결되어 에러가 안 납니다!)
+    cameraActor->AddComponent(cameraComp);
+
+    // 4. 조립이 끝난 카메라 액터를 게임 씬(명부)에 등록하여 관리망에 넣습니다.
+    scene.AddActor(cameraActor);
+    // -----------------------------------------------------------------------------------
 
     MSG msg = { 0 }; // 운영체제로부터 받을 메시지를 담을 구조체를 0으로 비워 선언합니다.
 
@@ -127,14 +145,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             timer.Tick(); // 매 프레임 타이머를 한 번 틱(Tick)하여 최신 델타 타임(DeltaTime)을 계산해 냅니다.
             // TODO: Update(timer.DeltaTime()); // 계산된 델타 타임을 전달하여 게임 속 오브젝트들의 상태(위치, 물리 등)를 갱신합니다.
             
-            // 1단계: 입력 및 시점 갱신 (카메라야, 사용자의 입력을 받아 마우스와 WASD로 움직여라!)
-            camera.Update(timer.DeltaTime());
+            //   1단계: 이번 프레임의 마우스/키보드 입력을 전역 통제 센터에 수집합니다!  
+            InputManager::GetInstance().Update();
 
-            // 2단계: 게임 월드 갱신 (씬아, 너희 세상 안의 모든 액터들에게 1프레임어치 행동을 하라고 명령해!)
+            //   2단계: 씬 갱신! (이때 카메라 액터 안에 달린 CameraComponent도 씬을 통해 자동으로 Update 됩니다!)  
             scene.Update(timer.DeltaTime());
 
-            // 3단계: 화면 그리기 지시 (렌더러야, 지금 세상의 상태와 카메라의 시점 정보를 바탕으로 화면을 찍어내라!)
-            renderer.Update(timer.DeltaTime(), &scene, &camera);
+            //   3단계: 렌더러에게 액터 명부와 카메라 부품(시점)을 던져주고 화면을 그리게 시킵니다.  
+            // 카메라 포인터(get)를 렌더러에 넘겨줍니다.
+            renderer.Update(timer.DeltaTime(), &scene, cameraComp.get());
 
             renderer.Draw(); // 2. 렌더러를 통해 화면 렌더링 호출!
         } // 게임 로직 블록 끝

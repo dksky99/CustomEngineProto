@@ -10,8 +10,9 @@
 // 렌더러가 새롭게 도입된 씬(Scene) 개념을 인지할 수 있도록 전방 선언(Forward Declaration)을 해줍니다. 
 class Scene; // Scene이라는 클래스가 외부에 존재함을 컴파일러에게 미리 알려줍니다.
 
-//  렌더러가 외부에서 전달받을 '카메라(Camera)' 클래스의 존재를 미리 알려줍니다. 
-class Camera;
+
+//  낡은 Camera 클래스를 지우고, CameraComponent를 전방 선언하여 받도록 수정합니다! 
+class CameraComponent; // 컴포넌트 시스템에 맞춰 전방 선언을 바꿉니다.
 
 class Mesh; //  렌더러가 메시(3D 모델)를 관리할 수 있도록 전방 선언합니다. 
 class Texture; //   새로 만든 텍스처 클래스를 전방 선언합니다.  
@@ -70,7 +71,7 @@ public: // 외부에서 호출할 수 있는 퍼블릭 함수들입니다.
 
 
     // --- 새롭게 추가된 함수: 매 프레임 수학 연산(행렬 갱신)을 처리할 함수입니다. ---
-    void Update(float deltaTime, Scene* scene, Camera* camera);
+    void Update(float deltaTime, Scene* scene, CameraComponent* camera);
 
 
     void Draw(); // 매 프레임마다 호출되어 화면을 특정 색상으로 지우고(Clear) 화면에 출력(Present)하는 함수입니다.

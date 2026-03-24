@@ -133,9 +133,10 @@
     <None Include="packages.config" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="Source\Framework\Components\CameraComponent.cpp" />
+    <ClCompile Include="Source\Framework\Core\InputManager.cpp" />
     <ClCompile Include="Source\Graphics\Resources\Material.cpp" />
     <ClCompile Include="Source\Graphics\Resources\Mesh.cpp" />
-    <ClCompile Include="Source\Framework\Core\Camera.cpp" />
     <ClCompile Include="Source\Framework\Components\Component.cpp" />
     <ClCompile Include="Source\Framework\Components\MeshComponent.cpp" />
     <ClCompile Include="Source\Game\CubeActor.cpp" />
@@ -148,10 +149,11 @@
     <ClCompile Include="Source\Graphics\Resources\Texture.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="Source\Framework\Components\CameraComponent.h" />
+    <ClInclude Include="Source\Framework\Core\InputManager.h" />
     <ClInclude Include="Source\Graphics\Resources\Material.h" />
     <ClInclude Include="Source\Graphics\Resources\Mesh.h" />
     <ClInclude Include="Source\Framework\Components\Component.h" />
-    <ClInclude Include="Source\Framework\Core\Camera.h" />
     <ClInclude Include="Source\Framework\Components\MeshComponent.h" />
     <ClInclude Include="Source\Game\CubeActor.h" />
     <ClInclude Include="Source\Framework\Core\Scene.h" />

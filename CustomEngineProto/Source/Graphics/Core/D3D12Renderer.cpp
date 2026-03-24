@@ -11,7 +11,8 @@
 #include "Framework/Core/Scene.h" // 렌더러가 화면에 그릴 타겟 씬(맵)을 파악하기 위함입니다.
 #include "Framework/Core/Actor.h" // 씬 안에 들어있는 액터들의 위치(Transform)를 빼오기 위함입니다.
 #include "Framework/Components/MeshComponent.h" //  액터가 메시 부품을 달고 있는지 검사하기 위해 포함합니다. 
-#include "Framework/Core/Camera.h" 
+
+#include "Framework/Components/CameraComponent.h" //
 
 
 //  렌더러가 텍스처와 머티리얼을 생성하고 관리하기 위해 새 헤더들을 불러옵니다. 
@@ -242,7 +243,7 @@ bool D3D12Renderer::Initialize(HWND hwnd, int width, int height) // DX12 초기화 
 } // Initialize 함수의 끝
 
 // --- Update 함수 구현 ---
-void D3D12Renderer::Update(float deltaTime, Scene* scene,Camera* camera)
+void D3D12Renderer::Update(float deltaTime, Scene* scene, CameraComponent* camera)
 {
     
 

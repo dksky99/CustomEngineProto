@@ -9,8 +9,9 @@ DirectionalLightActor::DirectionalLightActor() // 생성자 구현부입니다.
     mLightComp = std::make_shared<LightComponent>(); //  조명 부품을 메모리에 하나 찍어냅니다.
     AddComponent(mLightComp); //  내 몸통(Actor)에 조명 부품을 조립해 넣습니다!
 
-    // 태양이 완전히 수직으로만 돌지 않고 살짝 비스듬하게 돌도록 Y축(Yaw) 각도를 미리 0.5 라디안 정도 틀어줍니다.
-    mTransform.Rotation.y = 0.5f;
+    //   [수정] 태양이 예쁘게 45도 각도로 내려다보도록 고정 각도를 세팅합니다!  
+    mTransform.Rotation.x = 0.8f;  // 고개를 약 45도 숙여서 아래를 비추게 합니다.
+    mTransform.Rotation.y = -0.5f; // 약간 측면으로 비틀어 그림자의 입체감을 살려줍니다.
 } // 함수 끝
 
 //  [구조 분화] 기존에 렌더러에 흉측하게 하드코딩되어 있던 낮과 밤 계산 로직이 이 액터 안으로 우아하게 분리되었습니다! 
@@ -18,10 +19,10 @@ void DirectionalLightActor::Update(float deltaTime) // 매 프레임 업데이트입니다.
 { // 함수 시작
     Actor::Update(deltaTime); //  부모의 업데이트를 실행해 컴포넌트들도 작동하게 합니다.
 
-    //  X축(Pitch)을 시간의 흐름에 따라 계속 회전시켜 태양이 뜨고 지는 일주 운동을 시뮬레이션합니다. 
-    mTransform.Rotation.x += deltaTime * 0.5f;
+    //   [치명적 원인 해결!] 태양이 빙글빙글 돌면서 '밤'을 만들던 코드를 주석 처리(삭제)합니다!  
+      // mTransform.Rotation.x += deltaTime * 0.5f;
 
-    // 현재 내 회전 각도를 바탕으로 3D 회전 행렬을 뽑아냅니다.
+     // 현재 내 회전 각도를 바탕으로 3D 회전 행렬을 뽑아냅니다.
     XMMATRIX rotMat = XMMatrixRotationRollPitchYaw(mTransform.Rotation.x, mTransform.Rotation.y, mTransform.Rotation.z);
 
     // 회전 행렬을 이용해 내 정면(Forward)이 어디를 가리키는지 방향 벡터를 추출합니다. (이것이 렌더러가 쓸 '빛의 방향'입니다!)
@@ -36,8 +37,7 @@ void DirectionalLightActor::Update(float deltaTime) // 매 프레임 업데이트입니다.
     // 태양의 고도에 따른 빛의 강도(0.0 ~ 1.0)를 계산합니다.
     float intensity = std::clamp(sunY + 0.2f, 0.0f, 1.0f);
 
-    // 내 몸에 달린 조명 부품(LightComponent)의 색상과 밝기 데이터를 매 프레임 최신화합니다! 
-    // 이렇게 세팅만 해두면 렌더러가 나중에 알아서 이 부품을 찾아가 데이터를 빼갑니다.
-    mLightComp->LightColor = { intensity, intensity * 0.9f, intensity * 0.8f, 1.0f };
+    //   [수정] 노을빛(붉은색)이 섞이지 않도록 완벽한 흰색 조명으로 색상을 고정합니다.  
+    mLightComp->LightColor = { intensity, intensity, intensity, 1.0f }; // R, G, B 모두 동일하게 세팅
     mLightComp->Intensity = intensity;
 } // 함수 끝

@@ -34,6 +34,7 @@
 //  씬에 배치할 태양(Directional Light) 액터의 헤더를 포함합니다! 
 #include "Game/DirectionalLightActor.h" 
 
+
 // 윈도우에서 발생하는 이벤트(키보드 입력, 마우스 클릭, 닫기 버튼 등)를 처리할 콜백 함수의 원형을 선언합니다.
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 
@@ -118,6 +119,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // ★   [계층 구조 연결 2] 달의 부모를 지구로 설정합니다!   ★
     moonActor->GetTransform()->SetParent(earthActor->GetTransform());
     scene.AddActor(moonActor); // 씬에 올립니다.
+
+    //   [추가점] 큐브들의 그림자를 받아낼 '거대한 바닥(Floor)'을 하나 추가합니다!  
+    std::shared_ptr<CubeActor> floor = std::make_shared<CubeActor>();
+    floor->GetTransform()->Position = { 0.0f, -2.0f, 0.0f }; // 100개 큐브들 발밑에 배치
+    floor->GetTransform()->Scale = { 30.0f, 1.0f, 30.0f }; // 아주 넓고 납작하게 폅니다.
+
+    std::shared_ptr<MeshComponent> floorMesh = std::make_shared<MeshComponent>();
+    floorMesh->SetMesh(renderer.GetDefaultMesh());
+    floorMesh->SetMaterial(renderer.GetDefaultMaterial());
+    floor->AddComponent(floorMesh);
+    scene.AddActor(floor);
 
     // -----------------------------------------------------------------------------------
 

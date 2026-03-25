@@ -12,6 +12,9 @@ cbuffer cbPass : register(b0)
     float3 gEyePosW; //    스페큘러(반사광)를 계산하기 위한 '카메라의 현재 월드 위치'입니다.
     float pad; //    16바이트 정렬을 맞추기 위한 빈칸입니다.
     float4x4 gLightTransform; //    3D 정점을 '태양(빛)의 눈으로 바라본 UV 좌표'로 변환해 주는 그림자 마법 행렬입니다!
+    
+    // C++에서 넘겨준 태양의 뷰/투영 행렬을 받을 변수를 추가합니다! 
+    float4x4 gLightViewProj;
 }; 
 
 //    큐브 하나가 가질 데이터를 구조체로 정의합니다.   
@@ -61,6 +64,27 @@ struct PSOutput
     float4 Color : SV_TARGET0; //    메인 도화지에 출력될 최종 색상입니다. 
 };
 
+// 섀도우 맵(그림자)을 그릴 때만 호출될 '그림자 전용 버텍스 셰이더'를 신설합니다! 
+struct ShadowVSOutput
+{
+    float4 Pos : SV_POSITION;
+};
+
+ShadowVSOutput ShadowVS(VSInput input)
+{
+    ShadowVSOutput output;
+    float4x4 worldMat = gInstanceData[input.instanceID].World;
+    
+    float4 posW = float4(input.Pos, 1.0f);
+    posW = mul(posW, worldMat);
+    
+    //  핵심: 일반 카메라(gViewProj)가 아니라 태양의 눈(gLightViewProj)으로 화면을 압축하여 깊이를 기록합니다! 
+    output.Pos = mul(posW, gLightViewProj);
+    
+    return output;
+}
+// 
+
 //    1. 버텍스 셰이더의 메인 함수입니다.   
 PSInput VSMain(VSInput input)
 {
@@ -91,11 +115,30 @@ PSOutput PSMain(PSInput input)
 
     float4 texColor = gDiffuseMap.Sample(gsSamPointWrap, input.TexC);
 
-    float3 normal = normalize(input.NormalW);
+      //   [안전 장치 1] 만약 외부 텍스처(Test.png)가 너무 까맣게 로드되었다면, 강제로 밝은 회색으로 살려냅니다!  
+    if (length(texColor.rgb) < 0.1f)
+    {
+        texColor.rgb = float3(0.8f, 0.8f, 0.8f);
+    }
+    
+      //   [핵심 변경점] 외부 OBJ 파일에 법선(vn)이 없어 (0,0,0)이 들어왔을 때 발생하는 NaN(검은 화면) 버그를 완벽히 차단합니다!  
+    float3 normal = input.NormalW;
+    if (length(normal) < 0.01f)
+    {
+        // 법선이 없다면 강제로 위쪽(Y축)을 바라보게 만들어 수학 에러를 방지합니다.
+        normal = float3(0.0f, 1.0f, 0.0f);
+    }
+    else
+    {
+        // 법선이 정상적으로 존재할 때만 길이를 1로 맞춥니다.
+        normal = normalize(normal);
+    }
+    //   -------------------------------------------------------------------------------------------------------------  
     float3 lightVec = normalize(-gLightDir);
     float3 viewVec = normalize(gEyePosW - input.PosW);
     
-    float3 ambient = gLightColor.rgb * 0.2f; //    기본 밝기
+     //   [안전 장치 2] 빛이 닿지 않는 완벽한 역광(그림자) 상태에서도 큐브가 뚜렷하게 보이도록 기본 밝기를 60%로 확 끌어올립니다!  
+    float3 ambient = float3(0.6f, 0.6f, 0.6f);
     
     float diffuseFactor = saturate(dot(normal, lightVec)); //    표면 밝기 연산
     float3 diffuse = diffuseFactor * gLightColor.rgb;
@@ -109,14 +152,16 @@ PSOutput PSMain(PSInput input)
     
     input.ShadowPos.xyz /= input.ShadowPos.w; //    UV 좌표 정규화
     
-    if (input.ShadowPos.x >= 0.0f && input.ShadowPos.x <= 1.0f &&
-        input.ShadowPos.y >= 0.0f && input.ShadowPos.y <= 1.0f &&
-        input.ShadowPos.z >= 0.0f && input.ShadowPos.z <= 1.0f)
-    {
-        //    깊이 비교를 통해 가려졌는지 확인 (가려지면 0, 아니면 1)
-        shadowFactor = gShadowMap.SampleCmpLevelZero(gsSamShadow, input.ShadowPos.xy, input.ShadowPos.z).r;
-        shadowFactor = shadowFactor * 0.8f + 0.2f; //    완전 새까매지지 않도록 20% 보정
-    }
+    //   [최적화 수정] 성능을 갉아먹는 if문(분기문)을 완전히 삭제하고 하드웨어와 수학 연산에 맡깁니다!  
+    
+    // 1. 하드웨어 처리: 범위를 벗어난 X, Y 좌표는 위에서 설정한 '하얀색 테두리(OPAQUE_WHITE)' 덕분에 자동으로 1.0을 반환합니다.
+    shadowFactor = gShadowMap.SampleCmpLevelZero(gsSamShadow, input.ShadowPos.xy, input.ShadowPos.z - 0.003f).r;
+    
+    // 2. 수학적 처리: Z값(거리)이 1.0을 넘어가 빛의 도달 범위를 벗어나면 강제로 그림자를 없앱니다.
+    // step(a, x) 함수는 x가 a보다 크면 1.0, 작으면 0.0을 반환합니다. (if문 없이 분기 처리하는 고급 셰이더 스킬!)
+    shadowFactor = max(shadowFactor, step(1.0f, input.ShadowPos.z));
+    
+    shadowFactor = shadowFactor * 0.5f + 0.5f;
     // ------------------------------------------
     
     //    표면광과 광택에 그림자 수치를 곱해주어 어둡게 만듭니다!   

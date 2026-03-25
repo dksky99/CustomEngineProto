@@ -317,6 +317,10 @@ void D3D12Renderer::Update(float deltaTime, Scene* scene, CameraComponent* camer
     // 40x40 크기의 빛기둥이 1m부터 100m 앞까지 일직선으로 내리꽂힙니다.
     XMMATRIX lightProj = XMMatrixOrthographicLH(40.0f, 40.0f, 1.0f, 100.0f);
 
+    //   [추가점 4] 셰이더(ShadowVS)가 사용할 태양의 순수 ViewProj 행렬을 C++에서 계산하여 넣어줍니다!  
+    XMMATRIX lightViewProj = lightView * lightProj;
+    XMStoreFloat4x4(&passConstants.LightViewProj, XMMatrixTranspose(lightViewProj));
+
     // DX12의 공간 좌표(-1~1)를 텍스처를 읽기 위한 UV 좌표(0~1)로 변환해 주는 마법의 보정 행렬입니다.
     XMMATRIX T(
         0.5f, 0.0f, 0.0f, 0.0f,
@@ -452,7 +456,9 @@ bool D3D12Renderer::BuildRootSignature()
     shadowSampler.MipLODBias = 0;
     shadowSampler.MaxAnisotropy = 16;
     shadowSampler.ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL; // 내 깊이가 그림자보다 작거나 같으면 통과!
-    shadowSampler.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK; // 테두리는 까맣게(그림자 없음)
+    //   [최적화 수정] 섀도우 맵 영역 바깥쪽은 기본적으로 '하얀색(그림자 없음)'으로 취급하도록 세팅합니다!  
+    shadowSampler.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE; // OPAQUE_BLACK에서 WHITE로 변경
+
     shadowSampler.MinLOD = 0;
     shadowSampler.MaxLOD = D3D12_FLOAT32_MAX;
     shadowSampler.ShaderRegister = 1; //  s1 슬롯 할당
@@ -494,6 +500,10 @@ bool D3D12Renderer::BuildPSO() // PSO 구축
 {
     ComPtr<ID3DBlob> vertexShader;
     ComPtr<ID3DBlob> pixelShader;
+
+    //   [추가점 5] 그림자 전용 버텍스 셰이더의 결과물을 담을 바구니를 하나 더 준비합니다!  
+    ComPtr<ID3DBlob> shadowVertexShader;
+
     ComPtr<ID3DBlob> errorBlob;
 
     UINT compileFlags = 0;
@@ -505,6 +515,10 @@ bool D3D12Renderer::BuildPSO() // PSO 구축
     if (FAILED(hr)) { if (errorBlob) OutputDebugStringA((char*)errorBlob->GetBufferPointer()); return false; }
 
     hr = D3DCompileFromFile(L"Source/Shaders/color.hlsl", nullptr, nullptr, "PSMain", "ps_5_0", compileFlags, 0, &pixelShader, &errorBlob);
+    if (FAILED(hr)) { if (errorBlob) OutputDebugStringA((char*)errorBlob->GetBufferPointer()); return false; }
+
+    //   [추가점 6] color.hlsl 안에 새로 만든 'ShadowVS' 함수만 따로 컴파일해서 뽑아옵니다!  
+    hr = D3DCompileFromFile(L"Source/Shaders/color.hlsl", nullptr, nullptr, "ShadowVS", "vs_5_0", compileFlags, 0, &shadowVertexShader, &errorBlob);
     if (FAILED(hr)) { if (errorBlob) OutputDebugStringA((char*)errorBlob->GetBufferPointer()); return false; }
 
     // --- 수정됨: 입력 레이아웃에 NORMAL(법선) 데이터를 추가했습니다! ---
@@ -574,6 +588,10 @@ bool D3D12Renderer::BuildPSO() // PSO 구축
 
     // ---  오직 그림자(깊이)만 계산하는 섀도우 전용 파이프라인(mPsoShadow)을 굽습니다!  ---
     D3D12_GRAPHICS_PIPELINE_STATE_DESC shadowPsoDesc = psoDesc; // 기본 설정을 그대로 복사해 옵니다.
+
+    //   [추가점 7] 섀도우 전용 파이프라인(mPsoShadow)은 일반 VS가 아니라, 방금 컴파일한 '그림자 전용 VS'를 장착합니다!  
+    shadowPsoDesc.VS = { reinterpret_cast<BYTE*>(shadowVertexShader->GetBufferPointer()), shadowVertexShader->GetBufferSize() };
+
 
     // 핵심 1: 그림자 구울 때는 색상을 안 칠하므로 픽셀 셰이더(PS)를 꺼버립니다. (엄청난 속도 향상)
     shadowPsoDesc.PS = { nullptr, 0 };

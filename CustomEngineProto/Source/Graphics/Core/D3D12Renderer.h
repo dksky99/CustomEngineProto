@@ -45,6 +45,11 @@ struct PassConstants
 struct InstanceData
 {
     DirectX::XMFLOAT4X4 World = { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f };
+
+    //  셰이더와 크기를 맞추기 위해 아래 3줄을 반드시 추가해야 합니다! 
+    DirectX::XMFLOAT4 BaseColor = { 1.0f, 1.0f, 1.0f, 1.0f };
+    DirectX::XMFLOAT3 Emissive = { 0.0f, 0.0f, 0.0f };
+    float padding = 0.0f;
 };
 // 
 

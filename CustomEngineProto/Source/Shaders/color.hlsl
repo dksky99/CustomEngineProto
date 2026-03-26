@@ -20,7 +20,10 @@ cbuffer cbPass : register(b0)
 //    큐브 하나가 가질 데이터를 구조체로 정의합니다.   
 struct InstanceData
 {
-    float4x4 World; //    큐브 고유의 월드 공간 변환 행렬입니다.
+    float4x4 World;
+    float4 BaseColor; // C++에서 보낸 색상
+    float3 Emissive; // C++에서 보낸 발광
+    float pad;
 };
 //    100개의 큐브 위치 데이터가 담긴 배열(명부)을 통째로 t1 레지스터로 받습니다!   
 StructuredBuffer<InstanceData> gInstanceData : register(t1);
@@ -56,6 +59,9 @@ struct PSInput
     float3 NormalW : NORMAL; //    월드 공간으로 변환된 법선 벡터입니다.
     float2 TexC : TEXCOORD; //    텍스처 샘플링을 위한 UV 좌표입니다.
     float4 ShadowPos : TEXCOORD1; //    픽셀 셰이더에게 넘겨줄 "태양 시점에서의 내 그림자 텍스처 UV 좌표"입니다!
+    
+     //픽셀 셰이더로 넘겨줄 발광(Glow) 데이터를 위한 배달 상자 추가 
+    float3 Emissive : TEXCOORD5;
 };
 
 //    픽셀 셰이더의 최종 출력물을 정의하는 구조체입니다.   
@@ -99,7 +105,9 @@ PSInput VSMain(VSInput input)
     output.Pos = mul(posW, gViewProj); //    모니터 화면 좌표로 튕겨냅니다.
     
     output.NormalW = mul(input.Normal, (float3x3) worldMat);
-    output.Color = input.Color;
+    // 큐브마다 고유하게 전달된 색상과 발광 데이터를 출력 상자에 담습니다! 
+    output.Color = input.Color * gInstanceData[input.instanceID].BaseColor;
+    output.Emissive = gInstanceData[input.instanceID].Emissive;
     
     output.TexC = input.TexC + float2(gTotalTime * 0.1f, gTotalTime * 0.1f); //    텍스처 애니메이션!
     
@@ -120,6 +128,9 @@ PSOutput PSMain(PSInput input)
     {
         texColor.rgb = float3(0.8f, 0.8f, 0.8f);
     }
+    
+      //  텍스처 색상에 위에서 전달받은 큐브 고유의 색상을 곱해 최종 껍데기 색을 만듭니다. 
+    float4 baseColor = texColor * input.Color;
     
       //   [핵심 변경점] 외부 OBJ 파일에 법선(vn)이 없어 (0,0,0)이 들어왔을 때 발생하는 NaN(검은 화면) 버그를 완벽히 차단합니다!  
     float3 normal = input.NormalW;
@@ -164,10 +175,10 @@ PSOutput PSMain(PSInput input)
     shadowFactor = shadowFactor * 0.5f + 0.5f;
     // ------------------------------------------
     
-    //    표면광과 광택에 그림자 수치를 곱해주어 어둡게 만듭니다!   
-    float3 finalColor = (texColor.rgb * (ambient + diffuse * shadowFactor)) + (specular * shadowFactor);
+    //  껍데기 색상(baseColor)에 빛과 그림자 연산을 한 뒤, 마지막으로 '스스로 뿜어내는 발광(Emissive)'을 더해줍니다! 
+    float3 finalColor = (baseColor.rgb * (ambient + diffuse * shadowFactor)) + (specular * shadowFactor);
+    finalColor += input.Emissive;
     
-    //    [치명적 버그 해결] 다운받은 PNG의 알파(투명도)가 0이어서 큐브가 투명 인간이 되는 것을 막기 위해, 강제로 1.0f(불투명)를 넣습니다!   
     output.Color = float4(finalColor, 1.0f);
     
     return output;

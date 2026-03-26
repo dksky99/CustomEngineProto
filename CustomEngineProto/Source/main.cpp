@@ -33,6 +33,8 @@
 
 //  씬에 배치할 태양(Directional Light) 액터의 헤더를 포함합니다! 
 #include "Game/DirectionalLightActor.h" 
+// 머티리얼을 직접 생성하기 위해 헤더를 포함합니다.
+#include "Graphics/Resources/Material.h"
 
 
 // 윈도우에서 발생하는 이벤트(키보드 입력, 마우스 클릭, 닫기 버튼 등)를 처리할 콜백 함수의 원형을 선언합니다.
@@ -81,16 +83,42 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     }
 
 
-    //  렌더러가 그림을 그리기 전에, 개발자(우리)가 씬을 1개 만들고 100개의 큐브 액터를 직접 배치하는 레벨 디자인을 수행합니다! 
     Scene scene; // 월드(맵)를 담당할 씬 객체를 메모리에 올립니다.
-    //   [핵심 변경점: 태양계(Solar System) 레벨 디자인] 기존의 100개 큐브 루프를 지우고 계층 구조를 테스트합니다!  
+    
+
+    //  태양, 지구, 달, 바닥을 위한 각자의 고유한 재질(Material)을 만듭니다! 
+
+    // 1. 태양 재질: 노란색을 띠며, 어마어마한 수치(3.0 이상)의 발광을 뿜어내어 블룸 필터를 터뜨립니다!
+    std::shared_ptr<Material> sunMat = std::make_shared<Material>();
+    sunMat->DiffuseAlbedo = { 1.0f, 0.8f, 0.2f, 1.0f }; // 주황/노랑
+    sunMat->Emissive = { 4.0f, 2.0f, 0.0f }; //  눈부신 발광!
+
+    // 2. 지구 재질: 바다와 대륙의 푸른색을 가집니다. 발광하지 않으므로 스스로 빛나지 않습니다.
+    std::shared_ptr<Material> earthMat = std::make_shared<Material>();
+    earthMat->DiffuseAlbedo = { 0.2f, 0.4f, 1.0f, 1.0f }; // 시원한 파란색
+    earthMat->Emissive = { 0.0f, 0.0f, 0.0f };
+
+    // 3. 달 재질: 운석 분화구 느낌의 어두운 회색입니다.
+    std::shared_ptr<Material> moonMat = std::make_shared<Material>();
+    moonMat->DiffuseAlbedo = { 0.5f, 0.5f, 0.5f, 1.0f }; // 짙은 회색
+    moonMat->Emissive = { 0.0f, 0.0f, 0.0f };
+
+    // 4. 바닥 재질: 약간 어두운 회색으로 깔아 그림자를 잘 받게 만듭니다.
+    std::shared_ptr<Material> floorMat = std::make_shared<Material>();
+    floorMat->DiffuseAlbedo = { 0.7f, 0.7f, 0.7f, 1.0f };
+    floorMat->Emissive = { 0.0f, 0.0f, 0.0f };
+    //  ------------------------------------------------------------------- 
+
+
+
+
 
         // 1. 거대한 중앙의 태양(Sun)을 만듭니다.
     std::shared_ptr<Actor> sunActor = std::make_shared<Actor>(); // 태양 액터를 만듭니다.
     sunActor->GetTransform()->Scale = { 2.0f, 2.0f, 2.0f }; // 크기를 2배로 키웁니다.
     std::shared_ptr<MeshComponent> sunMesh = std::make_shared<MeshComponent>(); // 메시 부품을 만듭니다.
     sunMesh->SetMesh(renderer.GetDefaultMesh()); // 껍데기를 씌웁니다.
-    sunMesh->SetMaterial(renderer.GetDefaultMaterial()); // 재질을 씌웁니다.
+    sunMesh->SetMaterial(sunMat); // 재질을 씌웁니다.
     sunActor->AddComponent(sunMesh); // 몸통에 조립합니다.
     scene.AddActor(sunActor); // 씬에 올립니다.
 
@@ -100,7 +128,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     earthActor->GetTransform()->Position = { 5.0f, 0.0f, 0.0f }; //   중요: 태양의 중심에서부터 X축으로 5.0만큼 거리를 벌려줍니다! (공전 반경)  
     std::shared_ptr<MeshComponent> earthMesh = std::make_shared<MeshComponent>(); // 메시 부품을 만듭니다.
     earthMesh->SetMesh(renderer.GetDefaultMesh()); // 껍데기를 씌웁니다.
-    earthMesh->SetMaterial(renderer.GetDefaultMaterial()); // 재질을 씌웁니다.
+    earthMesh->SetMaterial(earthMat); // 재질을 씌웁니다.
     earthActor->AddComponent(earthMesh); // 몸통에 조립합니다.
 
     // ★   [계층 구조 연결 1] 지구의 부모를 태양으로 설정합니다!   ★
@@ -113,7 +141,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     moonActor->GetTransform()->Position = { 2.0f, 0.0f, 0.0f }; //   중요: 지구의 중심에서부터 X축으로 2.0만큼 거리를 벌려줍니다!  
     std::shared_ptr<MeshComponent> moonMesh = std::make_shared<MeshComponent>(); // 메시 부품을 만듭니다.
     moonMesh->SetMesh(renderer.GetDefaultMesh()); // 껍데기를 씌웁니다.
-    moonMesh->SetMaterial(renderer.GetDefaultMaterial()); // 재질을 씌웁니다.
+    moonMesh->SetMaterial(moonMat); // 재질을 씌웁니다.
     moonActor->AddComponent(moonMesh); // 몸통에 조립합니다.
 
     // ★   [계층 구조 연결 2] 달의 부모를 지구로 설정합니다!   ★
@@ -127,7 +155,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 
     std::shared_ptr<MeshComponent> floorMesh = std::make_shared<MeshComponent>();
     floorMesh->SetMesh(renderer.GetDefaultMesh());
-    floorMesh->SetMaterial(renderer.GetDefaultMaterial());
+    floorMesh->SetMaterial(floorMat);
     floor->AddComponent(floorMesh);
     scene.AddActor(floor);
 

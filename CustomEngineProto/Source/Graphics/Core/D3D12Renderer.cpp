@@ -356,6 +356,21 @@ void D3D12Renderer::Update(float deltaTime, Scene* scene, CameraComponent* camer
             // GPU 인스턴스 명부의 비어있는 다음 칸에 이 행렬을 덮어씌웁니다.
             XMStoreFloat4x4(&mMappedInstanceData[mInstanceCountToDraw].World, XMMatrixTranspose(finalWorld));
 
+            //   [여기를 추가해 주세요!] 액터의 머티리얼 데이터를 GPU 인스턴스 배열로 복사합니다.  
+            auto mat = meshComp->GetMaterial();
+            if (mat)
+            {
+                mMappedInstanceData[mInstanceCountToDraw].BaseColor = mat->DiffuseAlbedo;
+                mMappedInstanceData[mInstanceCountToDraw].Emissive = mat->Emissive;
+            }
+            else
+            {
+                mMappedInstanceData[mInstanceCountToDraw].BaseColor = { 1.0f, 1.0f, 1.0f, 1.0f };
+                mMappedInstanceData[mInstanceCountToDraw].Emissive = { 0.0f, 0.0f, 0.0f };
+            }
+            //   ----------------------------------------------------------------------  
+
+
             mInstanceCountToDraw++; // 그려야 할 목록 1명 추가요!
 
             if (mInstanceCountToDraw >= NumInstances) break; // 최대치(100)를 넘으면 엔진 뻗는 걸 막기 위해 탈출합니다.

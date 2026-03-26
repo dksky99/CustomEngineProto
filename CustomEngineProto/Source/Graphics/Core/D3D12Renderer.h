@@ -36,6 +36,8 @@ struct PassConstants
 
     //   [추가점 1] 셰이더가 그림자를 그릴 때 태양의 눈으로 바라볼 수 있도록, 태양 전용 뷰/투영 행렬을 추가합니다!  
     DirectX::XMFLOAT4X4 LightViewProj = { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f };
+
+
 };
 
 
@@ -173,6 +175,11 @@ private: // 클래스 내부에서만 접근 가능한 그래픽스 인터페이스 객체들입니다.
 
     //  오직 Z-버퍼(깊이)만 계산하고 색상은 칠하지 않는 그림자 전용 공장 라인(PSO)입니다. 
     ComPtr<ID3D12PipelineState> mPsoShadow;
+
+
+    //  스카이박스 전용 렌더링 파이프라인을 선언합니다. 
+    ComPtr<ID3D12PipelineState> mPsoSkybox;
+
 
     // 섀도우 맵 관련 리소스들입니다! 
     ComPtr<ID3D12Resource> mShadowMap; // 2048x2048 사이즈의 거대한 그림자 깊이 텍스처입니다.

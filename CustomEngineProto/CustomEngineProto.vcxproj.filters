@@ -26,6 +26,7 @@
     <None Include="Source\Shaders\PP_BlurH.hlsl" />
     <None Include="Source\Shaders\PP_BlurV.hlsl" />
     <None Include="Source\Shaders\PP_BrightPass.hlsl" />
+    <None Include="Source\Shaders\sky.hlsl" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Source\main.cpp">

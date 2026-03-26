@@ -624,6 +624,28 @@ bool D3D12Renderer::BuildPSO() // PSO 구축
     mDevice->CreateGraphicsPipelineState(&shadowPsoDesc, IID_PPV_ARGS(&mPsoShadow));
     // ---------------------------------------------------------------------------------------------------
 
+    //  여기서부터 스카이박스 전용 파이프라인(PSO)을 조립합니다! 
+    ComPtr<ID3DBlob> skyVS, skyPS;
+    D3DCompileFromFile(L"Source/Shaders/sky.hlsl", nullptr, nullptr, "VSMain", "vs_5_0", compileFlags, 0, &skyVS, &errorBlob);
+    if (errorBlob) OutputDebugStringA((char*)errorBlob->GetBufferPointer());
+    D3DCompileFromFile(L"Source/Shaders/sky.hlsl", nullptr, nullptr, "PSMain", "ps_5_0", compileFlags, 0, &skyPS, &errorBlob);
+    if (errorBlob) OutputDebugStringA((char*)errorBlob->GetBufferPointer());
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC skyPsoDesc = psoDesc;
+    skyPsoDesc.VS = { reinterpret_cast<BYTE*>(skyVS->GetBufferPointer()), skyVS->GetBufferSize() };
+    skyPsoDesc.PS = { reinterpret_cast<BYTE*>(skyPS->GetBufferPointer()), skyPS->GetBufferSize() };
+
+    // 핵심 트릭 1: 큐브의 '안쪽 면'을 봐야 하므로, 바깥면(Front)을 그리지 않고 날려버립니다!
+    skyPsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+
+    // 핵심 트릭 2: 셰이더에서 깊이를 강제로 1.0(가장 멂)으로 고정했으므로, 
+    // LESS(작을 때만 그리기)가 아니라 LESS_EQUAL(같거나 작을 때 그리기)로 바꿔줘야 화면에 나타납니다!
+    skyPsoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+
+    mDevice->CreateGraphicsPipelineState(&skyPsoDesc, IID_PPV_ARGS(&mPsoSkybox));
+    // 
+
+
 
 
     return SUCCEEDED(hr);
@@ -912,6 +934,24 @@ void D3D12Renderer::RenderScene()
     {
         mCommandList->DrawIndexedInstanced(mDefaultBoxMesh->GetIndexCount(), mInstanceCountToDraw, 0, 0, 0); // 그리기!
     }
+
+    //   [수정 지점] 여기서부터 3D 세상 배경이 될 스카이박스를 그립니다!  
+    mCommandList->SetPipelineState(mPsoSkybox.Get()); // 스카이박스 전용 셰이더로 교체
+
+    //   [변경 1] 스카이박스 크기를 500.0f배 키워, 카메라 렌즈(Near Z)에 잘리지 않게 만듭니다!  
+    XMMATRIX skyWorld = XMMatrixScaling(500.0f, 500.0f, 500.0f) * XMMatrixTranslation(mMappedPassCB->EyePosW.x, mMappedPassCB->EyePosW.y, mMappedPassCB->EyePosW.z);
+
+    //   [변경 2] 0번 인덱스(태양)를 덮어쓰지 않고, 배열의 맨 끝 빈 공간에 스카이박스 데이터를 기록합니다!  
+    UINT skyIndex = mInstanceCountToDraw;
+    if (skyIndex < NumInstances)
+    {
+        XMStoreFloat4x4(&mMappedInstanceData[skyIndex].World, XMMatrixTranspose(skyWorld));
+        mMappedInstanceData[skyIndex].BaseColor = { 1.0f, 1.0f, 1.0f, 1.0f };
+        mMappedInstanceData[skyIndex].Emissive = { 0.0f, 0.0f, 0.0f };
+
+        mCommandList->DrawIndexedInstanced(mDefaultBoxMesh->GetIndexCount(), 1, 0, 0, skyIndex);
+    }
+
 
 
     // 렌더링이 끝난 도화지는 다시 재료(READ)로 쓸 수 있게 전환합니다.

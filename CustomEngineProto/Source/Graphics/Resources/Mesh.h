@@ -23,6 +23,9 @@ public: // 퍼블릭 구역입니다.
     // 큐브(정육면체) 형태의 데이터를 GPU 메모리에 생성하는 초기화 함수입니다.
     void CreateBox(ID3D12Device* device);
 
+    // 완벽한 구체(행성)를 수학적으로 찍어내는 함수를 선언합니다! 
+ // radius: 반지름, sliceCount: 경도(세로선) 쪼개기, stackCount: 위도(가로선) 쪼개기
+    void CreateSphere(ID3D12Device* device, float radius, int sliceCount, int stackCount);
     //  외부 .obj 파일의 경로를 받아 3D 모델을 로드하는 함수입니다. 
     bool LoadFromOBJ(const std::string& filepath, ID3D12Device* device);
 

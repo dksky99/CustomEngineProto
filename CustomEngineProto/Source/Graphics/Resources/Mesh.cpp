@@ -57,6 +57,89 @@ void Mesh::CreateBox(ID3D12Device* device) // 큐브 데이터를 생성하고 GPU에 올리�
     CreateBuffers(device, vertices, indices);
 } // 함수 끝입니다.
 
+// 구체(Sphere) 생성 함수의 전체 구현부입니다. Mesh.cpp 파일의 맨 아래쪽에 통째로 추가해 주세요! 
+void Mesh::CreateSphere(ID3D12Device* device, float radius, int sliceCount, int stackCount)
+{
+    std::vector<Vertex> vertices;
+    std::vector<std::uint16_t> indices;
+
+    // 1. 북극점 (Top Pole) 정점 생성
+    Vertex topVertex = { {0.0f, radius, 0.0f}, {1.0f, 1.0f, 1.0f, 1.0f}, {0.0f, 1.0f, 0.0f}, {0.5f, 0.0f} };
+    vertices.push_back(topVertex);
+
+    float phiStep = DirectX::XM_PI / stackCount;
+    float thetaStep = DirectX::XM_2PI / sliceCount;
+
+    // 2. 위도(Stack)와 경도(Slice)를 따라 표면 정점들을 그물망처럼 촘촘히 생성합니다.
+    for (int i = 1; i <= stackCount - 1; ++i)
+    {
+        float phi = i * phiStep;
+        for (int j = 0; j <= sliceCount; ++j)
+        {
+            float theta = j * thetaStep;
+            Vertex v;
+
+            //  [핵심 수학] 구면 좌표계(Spherical Coordinates)를 직교 좌표계(XYZ)로 변환하는 공식입니다. 
+            v.Pos.x = radius * sinf(phi) * cosf(theta);
+            v.Pos.y = radius * cosf(phi);
+            v.Pos.z = radius * sinf(phi) * sinf(theta);
+
+            // 구체에서 표면이 바라보는 방향(법선 벡터)은 중심에서 표면으로 향하는 방향 그 자체입니다.
+            v.Normal = { v.Pos.x / radius, v.Pos.y / radius, v.Pos.z / radius };
+
+            // 구체를 종이로 감싸듯 텍스처 UV 좌표를 둥글게 할당합니다.
+            v.TexC.x = theta / DirectX::XM_2PI;
+            v.TexC.y = phi / DirectX::XM_PI;
+            v.Color = { 1.0f, 1.0f, 1.0f, 1.0f };
+
+            vertices.push_back(v);
+        }
+    }
+
+    // 3. 남극점 (Bottom Pole) 정점 생성
+    Vertex bottomVertex = { {0.0f, -radius, 0.0f}, {1.0f, 1.0f, 1.0f, 1.0f}, {0.0f, -1.0f, 0.0f}, {0.5f, 1.0f} };
+    vertices.push_back(bottomVertex);
+
+    // 4. 인덱스 조립 (북극점 뚜껑 닫기)
+    for (int i = 1; i <= sliceCount; ++i)
+    {
+        indices.push_back(0);
+        indices.push_back(i + 1);
+        indices.push_back(i);
+    }
+
+    // 5. 인덱스 조립 (몸통 부분의 사각형 격자를 2개의 삼각형으로 쪼개서 이어 붙이기)
+    int baseIndex = 1;
+    int ringVertexCount = sliceCount + 1;
+    for (int i = 0; i < stackCount - 2; ++i)
+    {
+        for (int j = 0; j < sliceCount; ++j)
+        {
+            indices.push_back(baseIndex + i * ringVertexCount + j);
+            indices.push_back(baseIndex + i * ringVertexCount + j + 1);
+            indices.push_back(baseIndex + (i + 1) * ringVertexCount + j);
+
+            indices.push_back(baseIndex + (i + 1) * ringVertexCount + j);
+            indices.push_back(baseIndex + i * ringVertexCount + j + 1);
+            indices.push_back(baseIndex + (i + 1) * ringVertexCount + j + 1);
+        }
+    }
+
+    // 6. 인덱스 조립 (남극점 뚜껑 닫기)
+    int southPoleIndex = (int)vertices.size() - 1;
+    baseIndex = southPoleIndex - ringVertexCount;
+    for (int i = 0; i < sliceCount; ++i)
+    {
+        indices.push_back(southPoleIndex);
+        indices.push_back(baseIndex + i);
+        indices.push_back(baseIndex + i + 1);
+    }
+
+    // 완성된 수많은 정점과 인덱스 번호들을 GPU 메모리로 쏘아 올립니다!
+    CreateBuffers(device, vertices, indices);
+}
+// 
+
 //  외부 OBJ 파일을 텍스트 기반으로 해석(Parsing)하는 전용 로더입니다. 
 bool Mesh::LoadFromOBJ(const std::string& filepath, ID3D12Device* device)
 { // 함수 시작입니다.

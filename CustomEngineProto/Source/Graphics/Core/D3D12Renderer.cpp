@@ -229,11 +229,12 @@ bool D3D12Renderer::Initialize(HWND hwnd, int width, int height) // DX12 초기화 
     mDefaultBoxMesh = std::make_shared<Mesh>(); // 렌더러 소유의 기본 박스 메시를 동적 생성합니다.
     //  새로 만든 LoadFromOBJ를 호출하여 외부 3D 모델 파일을 로드 시도합니다. 
    // 만약 "Resources/Models/model.obj" 파일이 존재하지 않는다면 함수가 false를 반환합니다.
-    if (!mDefaultBoxMesh->LoadFromOBJ("Resources/Models/model.obj", mDevice.Get()))
-    { // 파일이 없을 경우 (Fallback)
-        OutputDebugStringA("Failed to load OBJ file. Falling back to default Box.\n"); // 디버그 창에 실패를 알립니다.
-        mDefaultBoxMesh->CreateBox(mDevice.Get()); // 파일이 없으므로 임시로 기존의 정육면체 큐브 데이터를 생성합니다.
-    } // 조건문 끝
+    //if (!mDefaultBoxMesh->LoadFromOBJ("Resources/Models/model.obj", mDevice.Get()))
+    //{ // 파일이 없을 경우 (Fallback)
+    //    OutputDebugStringA("Failed to load OBJ file. Falling back to default Box.\n"); // 디버그 창에 실패를 알립니다.
+    //    mDefaultBoxMesh->CreateBox(mDevice.Get()); // 파일이 없으므로 임시로 기존의 정육면체 큐브 데이터를 생성합니다.
+    //} // 조건문 끝
+    mDefaultBoxMesh->CreateSphere(mDevice.Get(), 0.5f, 30, 30);
     //  ========================================================================= 
     //   [구조 분화] 변경된 초기화 함수들을 호출합니다.  
     if (!BuildOffscreenRenderTargets()) return false;

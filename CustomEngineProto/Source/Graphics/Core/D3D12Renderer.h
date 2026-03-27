@@ -38,6 +38,13 @@ struct PassConstants
     DirectX::XMFLOAT4X4 LightViewProj = { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f };
 
 
+    // 점광원(Point Light) 전용 변수 5줄을 새롭게, 그리고 '정식'으로 추가합니다!
+    DirectX::XMFLOAT3 PointLightPosW = { 0.0f, 0.0f, 0.0f }; // 점광원의 3D 위치
+    float PointLightFalloffStart = 0.0f;                     // 빛 감소 시작 거리
+    DirectX::XMFLOAT4 PointLightColor = { 0.0f, 0.0f, 0.0f, 0.0f }; // 점광원의 색상
+    float PointLightFalloffEnd = 0.0f;                       // 빛 완전 소멸 거리
+    DirectX::XMFLOAT3 padding2 = { 0.0f, 0.0f, 0.0f };       // HLSL의 16바이트 정렬을 맞추기 위한 빈칸
+
 };
 
 

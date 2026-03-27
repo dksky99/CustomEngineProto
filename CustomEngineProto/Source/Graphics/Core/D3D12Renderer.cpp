@@ -278,12 +278,18 @@ void D3D12Renderer::Update(float deltaTime, Scene* scene, CameraComponent* camer
     XMVECTOR lightDir = XMVectorSet(0.0f, -1.0f, 0.0f, 0.0f); // 만약 태양이 없으면 기본 빛 방향은 아래입니다.
     passConstants.LightColor = { 1.0f, 1.0f, 1.0f, 1.0f }; // 기본 색상은 흰색입니다.
 
+    //  점광원의 기본 색상을 까만색(꺼짐)으로 초기화해 둡니다. 
+    passConstants.PointLightColor = { 0.0f, 0.0f, 0.0f, 0.0f };
+
     const auto& actors = scene->GetActors(); // 씬 명부를 가져옵니다.
     for (auto& actor : actors)
     { // 루프 시작
         auto lightComp = actor->GetComponent<LightComponent>(); // 액터 중에 조명 부품을 단 녀석이 있는지 검사합니다.
         if (lightComp)
         { // 만약 조명 부품을 찾았다면!
+             //  조명의 타입(방향광 vs 점광원)을 검사하여 데이터를 다르게 챙깁니다! 
+            if (lightComp->Type == ELightType::Directional)
+            {
             // 이 액터의 현재 회전각을 추출하여 3D 회전 행렬을 만듭니다.
             XMMATRIX rotMat = XMMatrixRotationRollPitchYaw(actor->GetTransform()->Rotation.x, actor->GetTransform()->Rotation.y, actor->GetTransform()->Rotation.z);
 
@@ -293,7 +299,20 @@ void D3D12Renderer::Update(float deltaTime, Scene* scene, CameraComponent* camer
 
             // 부품에 기록된 최신 밝기 색상을 그대로 가져와 GPU에 쏠 택배 상자에 담습니다.
             passConstants.LightColor = lightComp->LightColor;
-            break; // 메인 태양 하나만 찾으면 되므로 즉시 루프를 탈출합니다.
+            }
+            else if (lightComp->Type == ELightType::Point)
+            {
+                // 점광원은 '위치'가 중요하므로, 부모-자식 계층 구조가 적용된 '최종 월드 행렬'에서 위치를 빼옵니다!
+                XMMATRIX worldMat = actor->GetTransform()->GetWorldMatrix();
+                XMVECTOR scale, rot, pos;
+                XMMatrixDecompose(&scale, &rot, &pos, worldMat); // 행렬을 분해(Decompose)하여 위치만 쏙 빼냅니다.
+
+                XMStoreFloat3(&passConstants.PointLightPosW, pos); // 쪼갠 위치를 구조체에 넣습니다.
+                passConstants.PointLightColor = lightComp->LightColor;
+                passConstants.PointLightFalloffStart = lightComp->FalloffStart;
+                passConstants.PointLightFalloffEnd = lightComp->FalloffEnd;
+            }
+            
         } // 조건문 끝
     } // 루프 끝
 

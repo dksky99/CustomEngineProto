@@ -15,6 +15,15 @@ cbuffer cbPass : register(b0)
     
     // C++에서 넘겨준 태양의 뷰/투영 행렬을 받을 변수를 추가합니다! 
     float4x4 gLightViewProj;
+    
+    
+     //  C++ 구조체와 1비트도 틀리지 않게 점광원 변수 5줄을 선언합니다. 
+    float3 gPointLightPosW;
+    float gPointLightFalloffStart;
+    float4 gPointLightColor;
+    float gPointLightFalloffEnd;
+    float3 pad2;
+    
 }; 
 
 //    큐브 하나가 가질 데이터를 구조체로 정의합니다.   
@@ -175,8 +184,40 @@ PSOutput PSMain(PSInput input)
     shadowFactor = shadowFactor * 0.5f + 0.5f;
     // ------------------------------------------
     
-    //  껍데기 색상(baseColor)에 빛과 그림자 연산을 한 뒤, 마지막으로 '스스로 뿜어내는 발광(Emissive)'을 더해줍니다! 
+    
+     // --- 2.  점광원 (Point Light) 연산 시작!  ---
+    // 픽셀의 현재 위치에서 점광원(태양)까지의 3D 화살표(벡터)를 만듭니다.
+    float3 pointLightVec = gPointLightPosW - input.PosW;
+    // 화살표의 길이 = 빛의 근원지까지의 실제 거리(미터)입니다.
+    float d = length(pointLightVec);
+    
+    float3 finalPointColor = float3(0.0f, 0.0f, 0.0f); // 초기값은 까만색
+
+    // 거리가 소멸 거리(FalloffEnd)보다 가까울 때만 셰이더 연산을 합니다! (최적화) if문일지라도 if문안의 내용이 더 무겁다면 if문을 써야한다.
+    if (d < gPointLightFalloffEnd)
+    {
+        pointLightVec /= d; // 거리를 구했으니 화살표 길이를 1로 정규화(Normalize)합니다.
+        
+        // 방향광과 똑같이 빛의 각도를 검사해 명암(Diffuse)과 광택(Specular)을 구합니다.
+        float pointDiffuseFactor = saturate(dot(normal, pointLightVec));
+        float3 pointDiffuse = pointDiffuseFactor * gPointLightColor.rgb;
+        
+        float3 pointHalfVec = normalize(pointLightVec + viewVec);
+        float pointSpecFactor = pow(saturate(dot(normal, pointHalfVec)), 64.0f);
+        float3 pointSpecular = (pointDiffuseFactor > 0.0f) ? (pointSpecFactor * gPointLightColor.rgb * 0.5f) : float3(0.0f, 0.0f, 0.0f);
+        
+        // [감쇠(Attenuation) 수학 공식] 거리가 멀어질수록 빛이 사그라드는 비율을 계산합니다. 
+        // 거리가 FalloffStart보다 작으면 1.0(최대), End에 다다르면 0.0으로 부드럽게 감소시킵니다.
+        float attenuation = saturate((gPointLightFalloffEnd - d) / (gPointLightFalloffEnd - gPointLightFalloffStart));
+        
+        // 점광원의 최종 색상에 감쇠 비율을 곱해줍니다.
+        finalPointColor = (baseColor.rgb * pointDiffuse + pointSpecular) * attenuation;
+    }
+    // -------------------------------------------------------------
+    
+    // 3. 최종 색상 합성! (표면색 * (환경광 + 방향광) + 점광원 + 발광)
     float3 finalColor = (baseColor.rgb * (ambient + diffuse * shadowFactor)) + (specular * shadowFactor);
+    finalColor += finalPointColor; //  새로 구한 점광원 불빛 얹기!
     finalColor += input.Emissive;
     
     output.Color = float4(finalColor, 1.0f);

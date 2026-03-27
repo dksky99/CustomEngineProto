@@ -18,7 +18,8 @@
 //  [추가점] 구조 개편에 따라 메인 함수에서도 프레임워크 요소(Scene, Actor)들을 사용할 수 있도록 헤더를 포함합니다. 
 #include "Framework/Core/Scene.h" // 액터들을 담을 거대한 세상(맵) 객체입니다.
 #include "Framework/Core/Actor.h" // 씬에 스폰될 개별 물체 객체입니다.
-
+//  태양에 조명 부품을 부착하기 위해 헤더를 포함합니다! 
+#include "Framework/Components/LightComponent.h"
 
 
 #include "Game/CubeActor.h"
@@ -120,6 +121,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     sunMesh->SetMesh(renderer.GetDefaultMesh()); // 껍데기를 씌웁니다.
     sunMesh->SetMaterial(sunMat); // 재질을 씌웁니다.
     sunActor->AddComponent(sunMesh); // 몸통에 조립합니다.
+
+    //  텅 빈 모형이었던 태양의 몸통에 사방으로 퍼지는 점광원(Point Light) 부품을 장착합니다! 
+    std::shared_ptr<LightComponent> sunPointLight = std::make_shared<LightComponent>();
+    sunPointLight->Type = ELightType::Point; // 나는 점광원이다!
+    sunPointLight->LightColor = { 2.0f, 1.8f, 0.8f, 1.0f }; // 강렬한 태양빛 (주황/노랑)
+    sunPointLight->FalloffStart = 5.0f;  // 5미터까지는 100% 눈부시게 밝습니다.
+    sunPointLight->FalloffEnd = 25.0f;   // 25미터를 넘어가면 빛이 완전히 사라집니다.
+    sunActor->AddComponent(sunPointLight); // 태양에 부착!
+    // ---------------------------------------------------------------------- 
+
     scene.AddActor(sunActor); // 씬에 올립니다.
 
     // 2. 태양을 공전하는 지구(Earth)를 만듭니다.
@@ -188,6 +199,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 
      // --- 태양빛(Directional Light) 세팅 ---
     std::shared_ptr<DirectionalLightActor> worldLight = std::make_shared<DirectionalLightActor>(); // 조명 액터 생성
+    //  태양이 진짜 점광원 역할을 맡았으므로, 세상을 밝히던 메인 방향광은 '어둡고 푸른 우주 배경빛'으로 용도를 변경합니다! 
+    auto dirLightComp = worldLight->GetComponent<LightComponent>();
+    if (dirLightComp)
+    {
+        dirLightComp->LightColor = { 0.1f, 0.1f, 0.25f, 1.0f }; // 어둡고 차가운 남색 계열로 덮어씌웁니다.
+    }
+
+
     scene.AddActor(worldLight); // 씬에 조명 등록
     // -----------------------------------------------------------------------------------
 

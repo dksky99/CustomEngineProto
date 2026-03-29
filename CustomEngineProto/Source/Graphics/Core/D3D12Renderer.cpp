@@ -205,6 +205,11 @@ bool D3D12Renderer::Initialize(HWND hwnd, int width, int height) // DX12 초기화 
         mDefaultTexture->CreateCheckerboard(mDevice.Get(), mCommandList.Get());
     } // 조건문 끝
 
+     // 아무 노멀맵을 주지 않으면, 엔진이 자동으로 "파란색 평면" 기본 가짜 노멀맵을 씌워줍니다! 
+    mDefaultNormalMap = std::make_shared<Texture>();
+    mDefaultNormalMap->CreateFlatNormalMap(mDevice.Get(), mCommandList.Get());
+
+
     // 명령서를 닫고 우체통에 넣어 즉시 실행시킵니다.
     mCommandList->Close();
     ID3D12CommandList* cmdsLists[] = { mCommandList.Get() };
@@ -531,7 +536,11 @@ bool D3D12Renderer::BuildRootSignature()
     CD3DX12_DESCRIPTOR_RANGE srvShadowTable;
     srvShadowTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 2); // t2 (그림자 텍스처용)
 
-    CD3DX12_ROOT_PARAMETER rootParameters[5] = {}; // 배열의 크기를 5칸으로 정확히 할당하여 메모리 초과 에러를 막습니다.
+    // 노멀맵 이미지를 꽂아 넣을 레지스터(t3) 칸을 서랍장에 추가합니다! 
+    CD3DX12_DESCRIPTOR_RANGE srvNormalTable;
+    srvNormalTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 3); // t3 레지스터!
+
+    CD3DX12_ROOT_PARAMETER rootParameters[6] = {}; // 배열의 크기를 5칸으로 정확히 할당하여 메모리 초과 에러를 막습니다.
     rootParameters[0].InitAsDescriptorTable(1, &cbvPassTable); // 0번 파라미터: 공통 상수 버퍼 (b0)를 묶습니다.
     rootParameters[1].InitAsDescriptorTable(1, &srvInstanceTable); // 1번 파라미터: 인스턴스 위치 배열 버퍼 (t1)를 묶습니다.
     rootParameters[2].InitAsDescriptorTable(1, &srvTextureTable); // 2번 파라미터: 표면 색상 텍스처 (t0)를 묶습니다.
@@ -539,6 +548,8 @@ bool D3D12Renderer::BuildRootSignature()
 
     // 새로 추가된 4번 파라미터: 셰이더의 b1 레지스터 공간에 32비트 상수 1개를 보낸다고 계약합니다.
     rootParameters[4].InitAsConstants(1, 1, 0);
+
+    rootParameters[5].InitAsDescriptorTable(1, &srvNormalTable); //  5번 방(t3)에 노멀맵 계약 추가!
 
     // 텍스처를 픽셀에 입힐 때 점으로 찍을지(Point), 부드럽게 뭉갤지(Linear) 결정하는 '샘플러'를 추가합니다.
     D3D12_STATIC_SAMPLER_DESC sampler = {};
@@ -583,7 +594,7 @@ bool D3D12Renderer::BuildRootSignature()
 
     CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc; // DX12 루트 시그니처 스펙 구조체를 선언합니다.
     //  넘겨줄 파라미터가 5개가 되었으므로, Init의 첫 번째 인자도 5로 변경합니다! 
-    rootSigDesc.Init(5, rootParameters, 2, samplers, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+    rootSigDesc.Init(6, rootParameters, 2, samplers, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
 
     ComPtr<ID3DBlob> serializedRootSig = nullptr;
     ComPtr<ID3DBlob> errorBlob = nullptr;
@@ -639,7 +650,9 @@ bool D3D12Renderer::BuildPSO() // PSO 구축
         // 12바이트(위치) + 16바이트(색상) = 28바이트 오프셋부터 법선 벡터가 시작됩니다.
         { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 28, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         // 위치(12) + 색상(16) + 법선(12) = 40바이트 오프셋부터 UV 데이터(float2, 8바이트)가 시작됨을 알려줍니다!
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 40, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 40, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+
+        { "TANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 48, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 } //  추가됨
     };
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
@@ -810,9 +823,21 @@ bool D3D12Renderer::BuildConstantBuffers()
 
     //  기본 텍스처(체크무늬)에게 "너는 2번 서랍장에 있어"라고 명찰을 달아줍니다. 
     mDefaultTexture->SrvGpuHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(mCbvHeap->GetGPUDescriptorHandleForHeapStart(), 2, mCbvSrvUavDescriptorSize);
+    
+    //  3: Default Normal Map (가짜 굴곡) 
+    hDescriptor.Offset(1, mCbvSrvUavDescriptorSize);
+    D3D12_SHADER_RESOURCE_VIEW_DESC normSrvDesc = {};
+    normSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    normSrvDesc.Format = mDefaultNormalMap->GetResource()->GetDesc().Format;
+    normSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    normSrvDesc.Texture2D.MostDetailedMip = 0;
+    normSrvDesc.Texture2D.MipLevels = 1;
+    mDevice->CreateShaderResourceView(mDefaultNormalMap->GetResource().Get(), &normSrvDesc, hDescriptor);
+    mDefaultNormalMap->SrvGpuHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(mCbvHeap->GetGPUDescriptorHandleForHeapStart(), 3, mCbvSrvUavDescriptorSize);
 
 
-    //   [3~5번 칸]: 임시 도화지 3장(Offscreen) 세팅  
+
+    // 4, 5, 6: Offscreen Render Targets (포스트 프로세싱)
     for (int i = 0; i < OffscreenBufferCount; ++i)
     {
         hDescriptor.Offset(1, mCbvSrvUavDescriptorSize);
@@ -826,7 +851,7 @@ bool D3D12Renderer::BuildConstantBuffers()
         mDevice->CreateShaderResourceView(mOffscreenTex[i].Get(), &offscreenSrvDesc, hDescriptor);
     }
 
-    //   [6번 칸]: 섀도우 맵 뷰 세팅  
+    //   [7번 칸]: 섀도우 맵 뷰 세팅  
     hDescriptor.Offset(1, mCbvSrvUavDescriptorSize);
 
     D3D12_SHADER_RESOURCE_VIEW_DESC shadowSrvDesc = {};
@@ -1038,6 +1063,15 @@ void D3D12Renderer::RenderScene()
         else {
             mCommandList->SetGraphicsRootDescriptorTable(2, mDefaultTexture->SrvGpuHandle);
         }
+
+        // 노멀맵이 등록되어 있다면 5번 계약 슬롯(t3)에 진짜 노멀맵을 꽂아줍니다! 없으면 가짜 파란 평면을 꽂습니다. 
+        if (batch.Mat && batch.Mat->NormalMap) {
+            mCommandList->SetGraphicsRootDescriptorTable(5, batch.Mat->NormalMap->SrvGpuHandle);
+        }
+        else {
+            mCommandList->SetGraphicsRootDescriptorTable(5, mDefaultNormalMap->SrvGpuHandle);
+        }
+
         //  셰이더에게 "이번에 그릴 녀석들은 명부의 batch.StartInstance 번호부터 시작해!" 라고 상수로 직접 쏴줍니다. 
         mCommandList->SetGraphicsRoot32BitConstant(4, batch.StartInstance, 0);
 

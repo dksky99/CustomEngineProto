@@ -77,7 +77,52 @@ void Texture::CreateCheckerboard(ID3D12Device* device, ID3D12GraphicsCommandList
     cmdList->ResourceBarrier(1, &barrier); // 커맨드 리스트에 배리어를 올립니다.
 } // 함수 블록 끝입니다.
 
+// 노멀맵은 RGB가 곧 방향(XYZ)을 뜻합니다. 평평한 바닥을 뜻하는 파란색(128, 128, 255) 텍스처를 굽습니다! 
+void Texture::CreateFlatNormalMap(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList)
+{
+    // 4픽셀(16바이트)은 DX12의 256바이트 정렬 규칙 위반입니다! 64픽셀(256바이트)로 늘려 규칙을 완벽히 맞춥니다! 
+    const UINT texWidth = 64;
+    const UINT texHeight = 64;
+    const UINT texPixelSize = 4;
 
+
+    D3D12_RESOURCE_DESC texDesc = {};
+    texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    texDesc.Width = texWidth;
+    texDesc.Height = texHeight;
+    texDesc.DepthOrArraySize = 1;
+    texDesc.MipLevels = 1;
+    texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    texDesc.SampleDesc.Count = 1;
+
+    CD3DX12_HEAP_PROPERTIES defaultHeap(D3D12_HEAP_TYPE_DEFAULT);
+    device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE, &texDesc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&mTexture));
+
+    UINT64 uploadBufferSize = 0;
+    device->GetCopyableFootprints(&texDesc, 0, 1, 0, nullptr, nullptr, nullptr, &uploadBufferSize);
+
+    CD3DX12_HEAP_PROPERTIES uploadHeap(D3D12_HEAP_TYPE_UPLOAD);
+    CD3DX12_RESOURCE_DESC bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(uploadBufferSize);
+    device->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &bufferDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&mUploadHeap));
+
+    std::vector<uint8_t> textureData(texWidth * texHeight * texPixelSize);
+    for (UINT i = 0; i < textureData.size(); i += 4) {
+        textureData[i + 0] = 128; // R (X축)
+        textureData[i + 1] = 128; // G (Y축)
+        textureData[i + 2] = 255; // B (Z축 위쪽)
+        textureData[i + 3] = 255; // A
+    }
+
+    D3D12_SUBRESOURCE_DATA subResourceData = {};
+    subResourceData.pData = textureData.data();
+    subResourceData.RowPitch = texWidth * texPixelSize;
+    subResourceData.SlicePitch = subResourceData.RowPitch * texHeight;
+
+    UpdateSubresources(cmdList, mTexture.Get(), mUploadHeap.Get(), 0, 0, 1, &subResourceData);
+
+    CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(mTexture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    cmdList->ResourceBarrier(1, &barrier);
+}
 
 //  윈도우 WIC 라이브러리를 이용하여 외부 이미지 파일(PNG, JPG 등)을 읽어오는 함수 전체 구현부입니다. 
 bool Texture::LoadFromFile(const std::wstring& filepath, ID3D12Device* device, ID3D12GraphicsCommandList* cmdList) // 파일 로딩 구현부입니다.
@@ -113,11 +158,23 @@ bool Texture::LoadFromFile(const std::wstring& filepath, ID3D12Device* device, I
 
     const UINT texPixelSize = 4; // 우리가 32비트 RGBA로 바꿨으므로 픽셀 1개당 무조건 4바이트를 차지합니다.
     const UINT rowPitch = width * texPixelSize; // 가로 한 줄의 총 바이트 용량을 계산합니다.
-    const UINT imageSize = rowPitch * height; // 이미지 전체의 총 바이트 용량을 계산합니다.
+    
+    
+    
+    // 어떤 해상도의 이미지가 오더라도 가로 한 줄의 바이트 수를 256의 배수로 강제 정렬(빈 공간 채우기)합니다! 
+    const UINT alignedRowPitch = (rowPitch + 255) & ~255;
+    const UINT imageSize = alignedRowPitch * height; // 정렬된 길이를 바탕으로 전체 이미지 크기를 계산합니다.
+
+
+   
+
+    
 
     std::vector<uint8_t> imagePixels(imageSize); // 이미지의 모든 픽셀 데이터를 받아올 거대한 C++ 빈 배열을 만듭니다.
     // 컨버터에서 완전히 압축이 풀리고 RGBA로 변환된 순수 픽셀 데이터들을 배열로 싹 복사해옵니다.
-    hr = converter->CopyPixels(nullptr, rowPitch, imageSize, imagePixels.data());
+
+    //  WIC에게 이미지를 복사할 때, 우리가 계산한 정렬된 간격(alignedRowPitch)으로 띄엄띄엄 저장하라고 지시합니다! 
+    hr = converter->CopyPixels(nullptr, alignedRowPitch, imageSize, imagePixels.data());
     if (FAILED(hr)) return false; // 픽셀 데이터 복사 실패 시 반환합니다.
 
     // --- 여기까지가 WIC를 이용한 [파일 열기 -> 압축 풀기 -> 픽셀 배열화] 완료입니다! ---
@@ -155,7 +212,8 @@ bool Texture::LoadFromFile(const std::wstring& filepath, ID3D12Device* device, I
 
     D3D12_SUBRESOURCE_DATA subResourceData = {}; // GPU로 전송할 데이터 덩어리 포장 구조체입니다.
     subResourceData.pData = imagePixels.data(); // 방금 WIC로 압축을 푼 C++ 이미지 배열의 첫 주소를 연결합니다.
-    subResourceData.RowPitch = rowPitch; // 가로 한 줄의 바이트 크기를 알려줍니다.
+    // 정렬이 완벽하게 끝난 가로 길이(alignedRowPitch)를 GPU에 전달합니다. 이제 거부당하지 않습니다! 
+    subResourceData.RowPitch = alignedRowPitch; // 가로 한 줄의 바이트 크기를 알려줍니다.
     subResourceData.SlicePitch = imageSize; // 전체 이미지의 바이트 크기를 알려줍니다.
 
     // 렌더러가 준 명령서(cmdList)를 사용해 CPU의 업로드 힙 데이터를 GPU 텍스처 메모리로 초고속 복사하라는 명령을 적습니다.

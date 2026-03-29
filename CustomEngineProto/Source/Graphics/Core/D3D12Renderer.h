@@ -213,6 +213,8 @@ private: // 클래스 내부에서만 접근 가능한 그래픽스 인터페이스 객체들입니다.
 
     //  렌더러가 관리할 기본 텍스처와 머티리얼 포인터입니다! 
     std::shared_ptr<Texture> mDefaultTexture; // 체크무늬 텍스처 리소스
+    // 이미지를 못 찾았을 때를 대비한 '기본 평평한 노멀맵' 포인터입니다. 
+    std::shared_ptr<Texture> mDefaultNormalMap;
     std::shared_ptr<Material> mDefaultMaterial; // 텍스처를 감싸고 있는 기본 머티리얼 객체
 
 

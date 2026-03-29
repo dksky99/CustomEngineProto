@@ -90,11 +90,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 
     //  탈출 문자가 발생하지 않도록 역슬래시를 두 번(\\) 적거나 슬래시(/)를 사용해야 합니다! 
    // 회원님께서 알려주신 정확한 절대 경로를 안전한 문법으로 덮어씌웠습니다.
-    std::shared_ptr<Texture> sunTex = renderer.LoadTexture(L"D:\\Git\\CustomEngineProto\\CustomEngineProto\\Resources\\Textures\\Sun.jpg");
-    std::shared_ptr<Texture> earthTex = renderer.LoadTexture(L"D:\\Git\\CustomEngineProto\\CustomEngineProto\\Resources\\Textures\\Earth.jpg");
-    std::shared_ptr<Texture> moonTex = renderer.LoadTexture(L"D:\\Git\\CustomEngineProto\\CustomEngineProto\\Resources\\Textures\\Moon.jpg");
-    std::shared_ptr<Texture> floorTex = renderer.LoadTexture(L"D:\\Git\\CustomEngineProto\\CustomEngineProto\\Resources\\Textures\\Floor.jpg");
+    std::shared_ptr<Texture> sunTex = renderer.LoadTexture(L"D:\\Git\\CustomEngineProto\\CustomEngineProto\\Resources\\Textures\\T_Sun.jpg");
+    std::shared_ptr<Texture> earthTex = renderer.LoadTexture(L"D:\\Git\\CustomEngineProto\\CustomEngineProto\\Resources\\Textures\\T_Earth.jpg");
+    std::shared_ptr<Texture> moonTex = renderer.LoadTexture(L"D:\\Git\\CustomEngineProto\\CustomEngineProto\\Resources\\Textures\\T_Moon.jpg");
+    std::shared_ptr<Texture> floorTex = renderer.LoadTexture(L"D:\\Git\\CustomEngineProto\\CustomEngineProto\\Resources\\Textures\\T_Floor.jpg");
 
+    //  다운로드하신 노멀맵(Normal Map)을 로드합니다! 
+   // 구글에 "Earth normal map", "Moon normal map" 등을 검색하셔서 다운받고 폴더에 넣어주세요! 
+   // 파일이 없으면 가짜 평면이 씌워지므로 에러가 나진 않지만 입체감 마법은 구경할 수 없습니다!
+    std::shared_ptr<Texture> earthNormal = renderer.LoadTexture(L"D:\\Git\\CustomEngineProto\\CustomEngineProto\\Resources\\Textures\\N_Earth.jpg");
+    std::shared_ptr<Texture> moonNormal = renderer.LoadTexture(L"D:\\Git\\CustomEngineProto\\CustomEngineProto\\Resources\\Textures\\N_Moon.jpg");
+    std::shared_ptr<Texture> floorNormal = renderer.LoadTexture(L"D:\\Git\\CustomEngineProto\\CustomEngineProto\\Resources\\Textures\\N_Floor.jpg");
 
 
 
@@ -107,16 +113,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 
     std::shared_ptr<Material> earthMat = std::make_shared<Material>();
     earthMat->DiffuseMap = earthTex; // 지구 텍스처 장착!
+    earthMat->NormalMap = earthNormal; // 지구에 대륙의 굴곡을 입힙니다!
     earthMat->DiffuseAlbedo = { 1.0f, 1.0f, 1.0f, 1.0f };
     earthMat->Emissive = { 0.0f, 0.0f, 0.0f };
 
     std::shared_ptr<Material> moonMat = std::make_shared<Material>();
     moonMat->DiffuseMap = moonTex; // 달 텍스처 장착!
+    moonMat->NormalMap = moonNormal; // 달에 수만 개의 분화구를 깊게 파냅니다!
     moonMat->DiffuseAlbedo = { 1.0f, 1.0f, 1.0f, 1.0f };
     moonMat->Emissive = { 0.0f, 0.0f, 0.0f };
 
     std::shared_ptr<Material> floorMat = std::make_shared<Material>();
     floorMat->DiffuseMap = floorTex; // 바닥 텍스처 장착!
+    floorMat->NormalMap = floorNormal; // 밋밋한 바닥에 오돌토돌한 돌 재질을 살려줍니다!
     floorMat->DiffuseAlbedo = { 0.7f, 0.7f, 0.7f, 1.0f };
     floorMat->Emissive = { 0.0f, 0.0f, 0.0f };
 

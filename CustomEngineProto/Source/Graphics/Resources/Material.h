@@ -12,6 +12,9 @@ public: // 누구나 접근 가능합니다.
     // 이 재질에 입혀질 기본 이미지(텍스처)의 포인터입니다. (언리얼의 Base Color 텍스처 역할)
     std::shared_ptr<Texture> DiffuseMap = nullptr;
 
+    // 머티리얼이 이제 빛과 그림자를 왜곡시킬 '노멀맵'도 가질 수 있습니다! 
+    std::shared_ptr<Texture> NormalMap = nullptr;
+
     // 텍스처가 없을 때 기본적으로 칠해질 RGBA 색상값입니다. 초기값은 순백색(1,1,1,1)입니다.
     DirectX::XMFLOAT4 DiffuseAlbedo = { 1.0f, 1.0f, 1.0f, 1.0f };
 

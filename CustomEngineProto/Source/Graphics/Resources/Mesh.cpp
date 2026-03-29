@@ -87,6 +87,12 @@ void Mesh::CreateSphere(ID3D12Device* device, float radius, int sliceCount, int 
             // 구체에서 표면이 바라보는 방향(법선 벡터)은 중심에서 표면으로 향하는 방향 그 자체입니다.
             v.Normal = { v.Pos.x / radius, v.Pos.y / radius, v.Pos.z / radius };
 
+
+            // 구체의 표면을 둥글게 스치는 접선(Tangent) 벡터를 수학적으로 계산합니다. 
+            v.TangentU.x = -sinf(theta);
+            v.TangentU.y = 0.0f;
+            v.TangentU.z = cosf(theta);
+
             // 구체를 종이로 감싸듯 텍스처 UV 좌표를 둥글게 할당합니다.
             v.TexC.x = theta / DirectX::XM_2PI;
             v.TexC.y = phi / DirectX::XM_PI;

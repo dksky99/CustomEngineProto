@@ -50,6 +50,9 @@ Texture2D gDiffuseMap : register(t0);
 //    태양 시점에서 렌더링 된 거대한 '섀도우 맵(깊이 텍스처)'을 3번 칸(t2)으로 가져옵니다!   
 Texture2D gShadowMap : register(t2);
 
+// C++에서 5번 슬롯에 꽂아준 노멀맵 이미지를 t3 레지스터로 받습니다! 
+Texture2D gNormalMap : register(t3);
+
 //    색상 텍스처를 선명하게 읽는 샘플러(s0)입니다.   
 SamplerState gsSamPointWrap : register(s0);
 
@@ -63,6 +66,8 @@ struct VSInput
     float4 Color : COLOR; //    4차원 색상(Color) 데이터입니다.
     float3 Normal : NORMAL; //    이 꼭짓점이 바라보는 방향(법선 벡터)입니다.
     float2 TexC : TEXCOORD; //    텍스처 UV 좌표(2D)입니다.
+    // C++에서 넘어오는 접선 벡터입니다!
+    float3 Tangent : TANGENT;
     uint instanceID : SV_InstanceID; //    GPU가 "지금 내가 몇 번째 큐브를 그리고 있지?"를 알 수 있게 해주는 마법의 시스템 변수입니다.
 };
 
@@ -78,6 +83,9 @@ struct PSInput
     
      //픽셀 셰이더로 넘겨줄 발광(Glow) 데이터를 위한 배달 상자 추가 
     float3 Emissive : TEXCOORD5;
+    
+      // 월드 공간으로 변환된 접선 벡터를 픽셀 셰이더로 넘겨줍니다.
+    float3 TangentW : TANGENT;
 };
 
 //    픽셀 셰이더의 최종 출력물을 정의하는 구조체입니다.   
@@ -129,6 +137,11 @@ PSInput VSMain(VSInput input)
     output.Pos = mul(posW, gViewProj); //    모니터 화면 좌표로 튕겨냅니다.
     
     output.NormalW = mul(input.Normal, (float3x3) worldMat);
+    
+    
+    // 접선(Tangent)도 행렬에 곱해 월드로 변환합니다!
+    output.TangentW = mul(input.Tangent, (float3x3) worldMat);
+    
      // 색상과 발광 데이터도 '진짜 인덱스'로 꺼내옵니다.
     output.Color = input.Color * gInstanceData[realInstanceID].BaseColor;
     output.Emissive = gInstanceData[realInstanceID].Emissive;
@@ -149,38 +162,63 @@ PSOutput PSMain(PSInput input)
     float4 texColor = gDiffuseMap.Sample(gsSamPointWrap, input.TexC);
 
       //   [안전 장치 1] 만약 외부 텍스처(Test.png)가 너무 까맣게 로드되었다면, 강제로 밝은 회색으로 살려냅니다!  
-    if (length(texColor.rgb) < 0.1f)
-    {
-        texColor.rgb = float3(0.8f, 0.8f, 0.8f);
-    }
-    
+    if (length(texColor.rgb) < 0.1f){texColor.rgb = float3(0.8f, 0.8f, 0.8f);}
       //  텍스처 색상에 위에서 전달받은 큐브 고유의 색상을 곱해 최종 껍데기 색을 만듭니다. 
     float4 baseColor = texColor * input.Color;
     
+     //  [핵심 마법: TBN 행렬 조립과 법선 찌그러뜨리기!] 
+    // 1. 노멀맵 이미지에서 RGB 색상을 뽑아옵니다.
+    float3 normalMapSample = gNormalMap.Sample(gsSamPointWrap, input.TexC).rgb;
+    
+      
+    
+  
+    
+    // 2. 부드러운 원래 법선(N)과 접선(T)을 가져옵니다. 오류 방지를 위해 길이를 검사합니다.
       //   [핵심 변경점] 외부 OBJ 파일에 법선(vn)이 없어 (0,0,0)이 들어왔을 때 발생하는 NaN(검은 화면) 버그를 완벽히 차단합니다!  
     float3 normal = input.NormalW;
     if (length(normal) < 0.01f)
-    {
         // 법선이 없다면 강제로 위쪽(Y축)을 바라보게 만들어 수학 에러를 방지합니다.
         normal = float3(0.0f, 1.0f, 0.0f);
-    }
     else
-    {
         // 법선이 정상적으로 존재할 때만 길이를 1로 맞춥니다.
         normal = normalize(normal);
-    }
-    //   -------------------------------------------------------------------------------------------------------------  
+    
+    float3 T = input.TangentW;
+    if (length(T) < 0.01f)
+        T = float3(1.0f, 0.0f, 0.0f);
+    
+    // 3. T벡터와 N벡터가 수직이 아닐 수 있으므로 직교화시킵니다 (Gram-Schmidt).
+    T = normalize(T - dot(T, normal) * normal);
+    
+    // 4. 두 벡터에 모두 수직인 3번째 종법선(B)을 외적으로 구합니다.
+    float3 B = cross(normal, T);
+    
+    // 5. 3개의 축(T, B, N)으로 3D 행렬을 조립합니다!
+    float3x3 TBN = float3x3(T, B, normal);
+    
+    // 6. 노멀맵 색상 [0 ~ 1] 범위를 방향 벡터 [-1 ~ 1] 범위로 압축 해제합니다.
+    float3 bumpedNormalW = normalMapSample * 2.0f - 1.0f;
+    
+    // 7. 이 가짜 방향에 TBN 행렬을 곱하면, 둥근 표면의 각도에 딱 맞게 진짜처럼 찌그러진 새로운 법선이 완성됩니다!
+    bumpedNormalW = normalize(mul(bumpedNormalW, TBN));
+    
+     // 이후의 모든 조명 계산은 원래 Normal 대신, 이 찌그러진 bumpedNormalW를 사용합니다!
+    // ------------------------------------------------------------------------------------------------
+    
     float3 lightVec = normalize(-gLightDir);
     float3 viewVec = normalize(gEyePosW - input.PosW);
     
      //   [안전 장치 2] 빛이 닿지 않는 완벽한 역광(그림자) 상태에서도 큐브가 뚜렷하게 보이도록 기본 밝기를 60%로 확 끌어올립니다!  
     float3 ambient = float3(0.6f, 0.6f, 0.6f);
     
-    float diffuseFactor = saturate(dot(normal, lightVec)); //    표면 밝기 연산
+     //  여기 원래 normal이 있던 자리에 bumpedNormalW 가 들어갑니다!
+    float diffuseFactor = saturate(dot(bumpedNormalW, lightVec));//표면 밝기 계산
     float3 diffuse = diffuseFactor * gLightColor.rgb;
     
     float3 halfVec = normalize(lightVec + viewVec); //    광택 연산
-    float specFactor = pow(saturate(dot(normal, halfVec)), 64.0f);
+     //  광택 계산 시에도 들어갑니다! 
+    float specFactor = pow(saturate(dot(bumpedNormalW, halfVec)), 64.0f);
     float3 specular = (diffuseFactor > 0.0f) ? (specFactor * gLightColor.rgb * 0.5f) : float3(0.0f, 0.0f, 0.0f);
 
   // PCF (Percentage-Closer Filtering) 부드러운 그림자 연산 
@@ -207,7 +245,8 @@ PSOutput PSMain(PSInput input)
     
      // 대기권 산란(Rim Lighting / Fresnel) 연산 
     // 시선과 픽셀의 방향이 수직(테두리)에 가까울수록 수치가 1.0으로 올라갑니다.
-    float rim = 1.0f - saturate(dot(viewVec, normal));
+     //  테두리 빛도 찌그러진 노멀맵을 사용합니다!
+    float rim = 1.0f - saturate(dot(viewVec, bumpedNormalW));
     
     // 0.6 미만은 0으로 날려버려, 아주 얇은 외곽선에만 빛이 맺히도록 깎아냅니다.
     rim = smoothstep(0.6f, 1.0f, rim);
@@ -231,11 +270,11 @@ PSOutput PSMain(PSInput input)
         pointLightVec /= d; // 거리를 구했으니 화살표 길이를 1로 정규화(Normalize)합니다.
         
         // 방향광과 똑같이 빛의 각도를 검사해 명암(Diffuse)과 광택(Specular)을 구합니다.
-        float pointDiffuseFactor = saturate(dot(normal, pointLightVec));
+        float pointDiffuseFactor = saturate(dot(bumpedNormalW, pointLightVec));
         float3 pointDiffuse = pointDiffuseFactor * gPointLightColor.rgb;
         
         float3 pointHalfVec = normalize(pointLightVec + viewVec);
-        float pointSpecFactor = pow(saturate(dot(normal, pointHalfVec)), 64.0f);
+        float pointSpecFactor = pow(saturate(dot(bumpedNormalW, pointHalfVec)), 64.0f);
         float3 pointSpecular = (pointDiffuseFactor > 0.0f) ? (pointSpecFactor * gPointLightColor.rgb * 0.5f) : float3(0.0f, 0.0f, 0.0f);
         
         // [감쇠(Attenuation) 수학 공식] 거리가 멀어질수록 빛이 사그라드는 비율을 계산합니다. 

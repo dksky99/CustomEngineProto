@@ -15,6 +15,9 @@ struct Vertex // 정점 1개의 데이터를 담는 구조체입니다.
     DirectX::XMFLOAT4 Color; // 색상 데이터입니다.
     DirectX::XMFLOAT3 Normal; // 빛을 계산할 법선 벡터입니다.
     DirectX::XMFLOAT2 TexC; // 텍스처를 입힐 UV 좌표입니다.
+
+    // 노멀 맵(입체감)을 계산하기 위해 표면을 스치고 지나가는 '접선(Tangent)' 벡터를 추가합니다! 
+    DirectX::XMFLOAT3 TangentU = { 1.0f, 0.0f, 0.0f };
 }; // 구조체 끝입니다.
 
 class Mesh // 3D 모델의 정점과 인덱스 데이터를 GPU에 보관하는 클래스입니다.

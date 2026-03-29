@@ -61,10 +61,17 @@ struct InstanceData
     float padding = 0.0f;
 };
 // 
+//같은 텍스처(재질)를 공유하는 물체들을 묶어 한 번에 그리기 위한 '배치(Batch) 그룹' 명부입니다! 
+struct RenderBatch
+{
+    Material* Mat;           // 이 그룹이 공통으로 사용하는 재질(텍스처)
+    UINT StartInstance;      // 100개짜리 거대 배열에서, 이 그룹이 몇 번째 인덱스부터 시작하는지
+    UINT InstanceCount;      // 이 그룹에 속한 물체가 총 몇 개인지
+};
 
 
 // 이번 예제에서 그릴 큐브의 총 개수를 상수로 정의합니다! (10 x 10 = 100개)
-const int NumInstances = 100;
+const int NumInstances = 200;
 
 
 
@@ -99,6 +106,10 @@ public: // 외부에서 호출할 수 있는 퍼블릭 함수들입니다.
     std::shared_ptr<Mesh> GetDefaultMesh() const { return mDefaultBoxMesh; }
     //   [추가점] 렌더러가 들고 있는 기본 머티리얼을 메인 게임 로직에서 가져다 쓸 수 있도록 함수를 뚫어줍니다.  
     std::shared_ptr<Material> GetDefaultMaterial() const { return mDefaultMaterial; } // 기본 재질 반환
+
+    //  C++ 외부(main.cpp)에서 아주 편하게 이미지 파일을 로드할 수 있게 해주는 마법의 헬퍼 함수들입니다! 
+    std::shared_ptr<Texture> LoadTexture(const std::wstring& filepath);
+    void RegisterTextureSRV(std::shared_ptr<Texture> tex);
 
 private:
 
@@ -205,7 +216,10 @@ private: // 클래스 내부에서만 접근 가능한 그래픽스 인터페이스 객체들입니다.
     std::shared_ptr<Material> mDefaultMaterial; // 텍스처를 감싸고 있는 기본 머티리얼 객체
 
 
-    UINT mInstanceCountToDraw = 0; // 이번 프레임에 그려야 할 인스턴스(박스)의 총 개수를 저장합니다.
+    // 재질별로 그룹화된 렌더링 목록과 서랍장 인덱스 추적 변수 
+    UINT mInstanceCountToDraw = 0;
+    std::vector<RenderBatch> mRenderBatches; // 매 프레임 만들어질 그리기 그룹 목록입니다.
+    UINT mNextTextureIndex = 7; // 서랍장에서 0~6번은 코어 시스템이 쓰고, 7번부터 새 텍스처를 차곡차곡 넣습니다!
 
     // --- 깊이 버퍼 관련 변수들 ---
     ComPtr<ID3D12Resource> mDepthStencilBuffer; // 화면 픽셀들의 거리(Z값) 정보를 저장할 2D 텍스처 메모리입니다.

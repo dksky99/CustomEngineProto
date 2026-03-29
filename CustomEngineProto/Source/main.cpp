@@ -87,28 +87,38 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     Scene scene; // 월드(맵)를 담당할 씬 객체를 메모리에 올립니다.
     
 
+
+    //  탈출 문자가 발생하지 않도록 역슬래시를 두 번(\\) 적거나 슬래시(/)를 사용해야 합니다! 
+   // 회원님께서 알려주신 정확한 절대 경로를 안전한 문법으로 덮어씌웠습니다.
+    std::shared_ptr<Texture> sunTex = renderer.LoadTexture(L"D:\\Git\\CustomEngineProto\\CustomEngineProto\\Resources\\Textures\\Sun.jpg");
+    std::shared_ptr<Texture> earthTex = renderer.LoadTexture(L"D:\\Git\\CustomEngineProto\\CustomEngineProto\\Resources\\Textures\\Earth.jpg");
+    std::shared_ptr<Texture> moonTex = renderer.LoadTexture(L"D:\\Git\\CustomEngineProto\\CustomEngineProto\\Resources\\Textures\\Moon.jpg");
+    std::shared_ptr<Texture> floorTex = renderer.LoadTexture(L"D:\\Git\\CustomEngineProto\\CustomEngineProto\\Resources\\Textures\\Floor.jpg");
+
+
+
+
     //  태양, 지구, 달, 바닥을 위한 각자의 고유한 재질(Material)을 만듭니다! 
 
-    // 1. 태양 재질: 노란색을 띠며, 어마어마한 수치(3.0 이상)의 발광을 뿜어내어 블룸 필터를 터뜨립니다!
     std::shared_ptr<Material> sunMat = std::make_shared<Material>();
-    sunMat->DiffuseAlbedo = { 1.0f, 0.8f, 0.2f, 1.0f }; // 주황/노랑
-    sunMat->Emissive = { 4.0f, 2.0f, 0.0f }; //  눈부신 발광!
+    sunMat->DiffuseMap = sunTex; // 태양 텍스처 장착!
+    sunMat->DiffuseAlbedo = { 1.0f, 1.0f, 1.0f, 1.0f };
+    sunMat->Emissive = { 2.0f, 1.0f, 0.0f };
 
-    // 2. 지구 재질: 바다와 대륙의 푸른색을 가집니다. 발광하지 않으므로 스스로 빛나지 않습니다.
     std::shared_ptr<Material> earthMat = std::make_shared<Material>();
-    earthMat->DiffuseAlbedo = { 0.2f, 0.4f, 1.0f, 1.0f }; // 시원한 파란색
+    earthMat->DiffuseMap = earthTex; // 지구 텍스처 장착!
+    earthMat->DiffuseAlbedo = { 1.0f, 1.0f, 1.0f, 1.0f };
     earthMat->Emissive = { 0.0f, 0.0f, 0.0f };
 
-    // 3. 달 재질: 운석 분화구 느낌의 어두운 회색입니다.
     std::shared_ptr<Material> moonMat = std::make_shared<Material>();
-    moonMat->DiffuseAlbedo = { 0.5f, 0.5f, 0.5f, 1.0f }; // 짙은 회색
+    moonMat->DiffuseMap = moonTex; // 달 텍스처 장착!
+    moonMat->DiffuseAlbedo = { 1.0f, 1.0f, 1.0f, 1.0f };
     moonMat->Emissive = { 0.0f, 0.0f, 0.0f };
 
-    // 4. 바닥 재질: 약간 어두운 회색으로 깔아 그림자를 잘 받게 만듭니다.
     std::shared_ptr<Material> floorMat = std::make_shared<Material>();
+    floorMat->DiffuseMap = floorTex; // 바닥 텍스처 장착!
     floorMat->DiffuseAlbedo = { 0.7f, 0.7f, 0.7f, 1.0f };
     floorMat->Emissive = { 0.0f, 0.0f, 0.0f };
-    //  ------------------------------------------------------------------- 
 
 
 

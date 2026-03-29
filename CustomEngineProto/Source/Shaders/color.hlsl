@@ -26,6 +26,13 @@ cbuffer cbPass : register(b0)
     
 }; 
 
+//  C++에서 쏴준 '배치 그룹의 시작 번호'를 받을 상수 버퍼(b1) 공간을 오픈합니다! 
+cbuffer cbBatch : register(b1)
+{
+    uint gStartInstanceLocation; // "이번 그룹은 1번(지구)부터 시작해!"
+    float3 pad3; // 16바이트 정렬을 위한 패딩
+};
+
 //    큐브 하나가 가질 데이터를 구조체로 정의합니다.   
 struct InstanceData
 {
@@ -88,7 +95,12 @@ struct ShadowVSOutput
 ShadowVSOutput ShadowVS(VSInput input)
 {
     ShadowVSOutput output;
-    float4x4 worldMat = gInstanceData[input.instanceID].World;
+    
+    // 바보 변수(0)에 C++이 넘겨준 진짜 시작 번호를 더해서 '진짜 인덱스 번호'를 찾습니다! 
+    uint realInstanceID = input.instanceID + gStartInstanceLocation;
+    
+   // 진짜 인덱스 번호로 내 월드 행렬을 꺼냅니다.
+    float4x4 worldMat = gInstanceData[realInstanceID].World;
     
     float4 posW = float4(input.Pos, 1.0f);
     posW = mul(posW, worldMat);
@@ -105,7 +117,10 @@ PSInput VSMain(VSInput input)
 {
     PSInput output;
     
-    float4x4 worldMat = gInstanceData[input.instanceID].World; //    내 번호표에 맞는 월드 행렬을 빼옵니다.
+     //  여기서도 바보 변수를 진짜 인덱스로 고쳐서 명부를 조회합니다! 
+    uint realInstanceID = input.instanceID + gStartInstanceLocation;
+    
+    float4x4 worldMat = gInstanceData[realInstanceID].World;
     
     float4 posW = float4(input.Pos, 1.0f);
     posW = mul(posW, worldMat); //    큐브를 3D 공간 각자의 위치로 보냅니다.
@@ -114,9 +129,9 @@ PSInput VSMain(VSInput input)
     output.Pos = mul(posW, gViewProj); //    모니터 화면 좌표로 튕겨냅니다.
     
     output.NormalW = mul(input.Normal, (float3x3) worldMat);
-    // 큐브마다 고유하게 전달된 색상과 발광 데이터를 출력 상자에 담습니다! 
-    output.Color = input.Color * gInstanceData[input.instanceID].BaseColor;
-    output.Emissive = gInstanceData[input.instanceID].Emissive;
+     // 색상과 발광 데이터도 '진짜 인덱스'로 꺼내옵니다.
+    output.Color = input.Color * gInstanceData[realInstanceID].BaseColor;
+    output.Emissive = gInstanceData[realInstanceID].Emissive;
     
     output.TexC = input.TexC + float2(gTotalTime * 0.1f, gTotalTime * 0.1f); //    텍스처 애니메이션!
     

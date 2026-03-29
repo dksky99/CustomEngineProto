@@ -17,6 +17,11 @@ public: // 누구나 접근할 수 있도록 퍼블릭으로 엽니다.
     // 실제 GPU 메모리에 할당된 텍스처 리소스의 포인터를 반환하는 함수입니다.
     Microsoft::WRL::ComPtr<ID3D12Resource> GetResource() const { return mTexture; }
 
+    //  이 텍스처가 렌더러의 거대 서랍장(Descriptor Heap) 중 몇 번째 칸에 들어있는지 기억하는 명찰입니다! 
+    D3D12_GPU_DESCRIPTOR_HANDLE SrvGpuHandle = {};
+
+
+
 private: // 외부에서 함부로 조작하지 못하게 은닉합니다.
     Microsoft::WRL::ComPtr<ID3D12Resource> mTexture; // 실제 이미지 데이터가 담길 GPU 전용 메모리 공간입니다.
     Microsoft::WRL::ComPtr<ID3D12Resource> mUploadHeap; // CPU에서 GPU로 데이터를 넘길 때 잠시 거쳐 가는 임시 업로드 메모리입니다.

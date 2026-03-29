@@ -2,6 +2,7 @@
 #include <d3dcompiler.h> // 셰이더 컴파일을 위한 헤더를 포함합니다.
 #include <vector> // C++의 동적 배열인 std::vector를 사용하기 위해 포함합니다.
 #include <algorithm> 
+#include <map> //  재질별 그룹화를 위해 map 자료구조를 추가합니다. 
 
 
 
@@ -359,43 +360,62 @@ void D3D12Renderer::Update(float deltaTime, Scene* scene, CameraComponent* camer
 
 
     memcpy(mMappedPassCB, &passConstants, sizeof(PassConstants));
+
+
+    //  최강의 렌더링 최적화: 재질(Material)별로 물체들을 묶어주는 Batch 알고리즘입니다! 
+    std::map<Material*, std::vector<InstanceData>> matBatches; // 재질 포인터를 키(Key)로 삼아 물체들을 바구니에 담습니다.
+
+    for (auto& actor : actors)
+    {
+        auto meshComp = actor->GetComponent<MeshComponent>();
+        if (meshComp && meshComp->GetMesh())
+        {
+            InstanceData instData;
+            XMMATRIX finalWorld = actor->GetTransform()->GetWorldMatrix();
+            XMStoreFloat4x4(&instData.World, XMMatrixTranspose(finalWorld));
+
+            auto mat = meshComp->GetMaterial();
+            if (mat) {
+                instData.BaseColor = mat->DiffuseAlbedo;
+                instData.Emissive = mat->Emissive;
+                matBatches[mat.get()].push_back(instData); // 자기 재질 바구니에 데이터를 쏙 넣습니다.
+            }
+            else {
+                instData.BaseColor = { 1.0f, 1.0f, 1.0f, 1.0f };
+                instData.Emissive = { 0.0f, 0.0f, 0.0f };
+                matBatches[nullptr].push_back(instData); // 재질이 없으면 널 포인터 바구니에 넣습니다.
+            }
+        }
+    }
+
+
+
+
+
+
     //  렌더 배칭(Render Batching)의 기초! 모든 액터를 무식하게 다 그리지 않고 필터링합니다. 
     mInstanceCountToDraw = 0; // 이번 프레임에 그려야 할 인스턴스 카운트를 0으로 초기화합니다.
 
+    mRenderBatches.clear(); // 매 프레임 그리기 목록을 갱신합니다.
 
-    for (auto& actor : actors) // 세상의 모든 액터를 순회합니다.
-    { // 루프 시작
-        // 해당 액터가 '외형 부품(MeshComponent)'을 장착하고 있는지 검색해서 포인터를 가져옵니다.
-        auto meshComp = actor->GetComponent<MeshComponent>();
+    // 바구니에 담긴 물체들을 거대한 하나의 배열(GPU 버퍼)로 직렬화(Serialization)합니다.
+    for (auto& pair : matBatches)
+    {
+        RenderBatch batch;
+        batch.Mat = pair.first; // 이 바구니의 재질
+        batch.StartInstance = mInstanceCountToDraw; // 이 바구니의 물체들이 배열의 몇 번부터 시작하는지
+        batch.InstanceCount = static_cast<UINT>(pair.second.size()); // 총 몇 개인지
 
-        // 만약 메시 컴포넌트가 있고, 그 컴포넌트에 빈 껍데기가 아닌 진짜 3D 모델(Mesh)이 꽂혀 있다면!
-        if (meshComp && meshComp->GetMesh())
-        { // 렌더링 합격 블록
-            XMMATRIX finalWorld = actor->GetTransform()->GetWorldMatrix(); // 액터의 3D 공간 행렬을 뽑아냅니다.
-
-            // GPU 인스턴스 명부의 비어있는 다음 칸에 이 행렬을 덮어씌웁니다.
-            XMStoreFloat4x4(&mMappedInstanceData[mInstanceCountToDraw].World, XMMatrixTranspose(finalWorld));
-
-            //   [여기를 추가해 주세요!] 액터의 머티리얼 데이터를 GPU 인스턴스 배열로 복사합니다.  
-            auto mat = meshComp->GetMaterial();
-            if (mat)
+        for (auto& data : pair.second)
+        {
+            if (mInstanceCountToDraw < NumInstances)
             {
-                mMappedInstanceData[mInstanceCountToDraw].BaseColor = mat->DiffuseAlbedo;
-                mMappedInstanceData[mInstanceCountToDraw].Emissive = mat->Emissive;
+                mMappedInstanceData[mInstanceCountToDraw++] = data; // GPU 메모리로 복사!
             }
-            else
-            {
-                mMappedInstanceData[mInstanceCountToDraw].BaseColor = { 1.0f, 1.0f, 1.0f, 1.0f };
-                mMappedInstanceData[mInstanceCountToDraw].Emissive = { 0.0f, 0.0f, 0.0f };
-            }
-            //   ----------------------------------------------------------------------  
-
-
-            mInstanceCountToDraw++; // 그려야 할 목록 1명 추가요!
-
-            if (mInstanceCountToDraw >= NumInstances) break; // 최대치(100)를 넘으면 엔진 뻗는 걸 막기 위해 탈출합니다.
-        } // 합격 블록 끝
-    } // 루프 끝
+        }
+        mRenderBatches.push_back(batch); // 완성된 그룹을 목록에 등록합니다.
+    }
+    //  --------------------------------------------------------------------------------- 
 }
 
 //   [구조 분화] 엔진의 메인 Draw 함수가 구조적으로 매우 깔끔해졌습니다!  
@@ -438,6 +458,59 @@ void D3D12Renderer::FlushCommandQueue()
     }
 }
 
+std::shared_ptr<Texture> D3D12Renderer::LoadTexture(const std::wstring& filepath)
+{
+    // 로딩을 위해 커맨드 리스트를 잠시 엽니다.
+    mCommandAllocator->Reset();
+    mCommandList->Reset(mCommandAllocator.Get(), nullptr);
+
+    std::shared_ptr<Texture> tex = std::make_shared<Texture>();
+
+    // 파일 로딩에 성공하면 서랍장에 등록하고, 실패하면 기본 체크무늬를 줍니다.
+    if (tex->LoadFromFile(filepath, mDevice.Get(), mCommandList.Get())) {
+        RegisterTextureSRV(tex);
+    }
+    else {
+        OutputDebugStringA("Texture load failed, falling back to default.\n");
+        tex = mDefaultTexture;
+    }
+
+    // 파일 로딩 명령을 제출하고 동기화(완료 대기)합니다.
+    mCommandList->Close();
+    ID3D12CommandList* cmdsLists[] = { mCommandList.Get() };
+    mCommandQueue->ExecuteCommandLists(1, cmdsLists);
+    FlushCommandQueue();
+
+    return tex;
+}
+//  외부 이미지를 로드하고 자동으로 GPU 서랍장에 꽂아주는 핵심 함수들 구현부입니다! 
+void D3D12Renderer::RegisterTextureSRV(std::shared_ptr<Texture> tex)
+{
+    if (!tex || !tex->GetResource()) return;
+    if (mNextTextureIndex >= 50) return; // 서랍장(50칸)이 꽉 차면 무시합니다.
+
+    // 서랍장의 빈칸(mNextTextureIndex)을 찾아 포인터를 만듭니다.
+    CD3DX12_CPU_DESCRIPTOR_HANDLE hDescriptor(mCbvHeap->GetCPUDescriptorHandleForHeapStart(), mNextTextureIndex, mCbvSrvUavDescriptorSize);
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC texSrvDesc = {};
+    texSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    texSrvDesc.Format = tex->GetResource()->GetDesc().Format;
+    texSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    texSrvDesc.Texture2D.MostDetailedMip = 0;
+    texSrvDesc.Texture2D.MipLevels = 1;
+    texSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+
+    // 해당 빈칸에 텍스처 뷰(SRV)를 생성해 꽂아 넣습니다.
+    mDevice->CreateShaderResourceView(tex->GetResource().Get(), &texSrvDesc, hDescriptor);
+
+    // 텍스처 본인에게 "너는 서랍장 몇 번 칸에 있어"라고 명찰(Handle)을 달아줍니다. 나중에 꺼내 쓸 때 씁니다!
+    tex->SrvGpuHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(mCbvHeap->GetGPUDescriptorHandleForHeapStart(), mNextTextureIndex, mCbvSrvUavDescriptorSize);
+    mNextTextureIndex++; // 다음 텍스처를 위해 빈칸 번호를 1 올립니다.
+}
+// -------------------------------------------------------------------------------------- 
+
+
+
 bool D3D12Renderer::BuildRootSignature()
 {
     // 새로운 셰이더 규칙(레지스터)에 맞게 계약서(루트 시그니처)를 완전히 새로 작성합니다! 
@@ -458,12 +531,14 @@ bool D3D12Renderer::BuildRootSignature()
     CD3DX12_DESCRIPTOR_RANGE srvShadowTable;
     srvShadowTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 2); // t2 (그림자 텍스처용)
 
-    CD3DX12_ROOT_PARAMETER rootParameters[4] = {}; // 배열의 크기를 4칸으로 정확히 할당하여 메모리 초과 에러를 막습니다.
+    CD3DX12_ROOT_PARAMETER rootParameters[5] = {}; // 배열의 크기를 5칸으로 정확히 할당하여 메모리 초과 에러를 막습니다.
     rootParameters[0].InitAsDescriptorTable(1, &cbvPassTable); // 0번 파라미터: 공통 상수 버퍼 (b0)를 묶습니다.
     rootParameters[1].InitAsDescriptorTable(1, &srvInstanceTable); // 1번 파라미터: 인스턴스 위치 배열 버퍼 (t1)를 묶습니다.
     rootParameters[2].InitAsDescriptorTable(1, &srvTextureTable); // 2번 파라미터: 표면 색상 텍스처 (t0)를 묶습니다.
     rootParameters[3].InitAsDescriptorTable(1, &srvShadowTable); // 3번 파라미터: 섀도우 맵 깊이 텍스처 (t2)를 묶습니다.
-   
+
+    // 새로 추가된 4번 파라미터: 셰이더의 b1 레지스터 공간에 32비트 상수 1개를 보낸다고 계약합니다.
+    rootParameters[4].InitAsConstants(1, 1, 0);
 
     // 텍스처를 픽셀에 입힐 때 점으로 찍을지(Point), 부드럽게 뭉갤지(Linear) 결정하는 '샘플러'를 추가합니다.
     D3D12_STATIC_SAMPLER_DESC sampler = {};
@@ -507,8 +582,8 @@ bool D3D12Renderer::BuildRootSignature()
 
 
     CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc; // DX12 루트 시그니처 스펙 구조체를 선언합니다.
-    // 파라미터 개수를 4로, 샘플러 개수를 2로 늘리고, 아까 위에서 2개로 묶어둔 samplers 배열 전체를 넘겨 계약서를 완성합니다!
-    rootSigDesc.Init(4, rootParameters, 2, samplers, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+    //  넘겨줄 파라미터가 5개가 되었으므로, Init의 첫 번째 인자도 5로 변경합니다! 
+    rootSigDesc.Init(5, rootParameters, 2, samplers, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
 
     ComPtr<ID3DBlob> serializedRootSig = nullptr;
     ComPtr<ID3DBlob> errorBlob = nullptr;
@@ -676,8 +751,8 @@ bool D3D12Renderer::BuildPSO() // PSO 구축
 bool D3D12Renderer::BuildConstantBuffers()
 {
     D3D12_DESCRIPTOR_HEAP_DESC cbvHeapDesc;
-    //  섀도우 맵 뷰(SRV)를 한 장 더 꽂기 위해 서랍장 칸을 7칸으로 늘립니다! 
-    cbvHeapDesc.NumDescriptors = 7;
+    // 행성마다 여러 개의 텍스처를 꽂을 수 있도록 서랍장 크기를 7칸에서 50칸으로 폭증시킵니다! 
+    cbvHeapDesc.NumDescriptors = 50;
     cbvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     cbvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     cbvHeapDesc.NodeMask = 0;
@@ -732,6 +807,10 @@ bool D3D12Renderer::BuildConstantBuffers()
     texSrvDesc.Texture2D.MipLevels = 1;
     texSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
     mDevice->CreateShaderResourceView(mDefaultTexture->GetResource().Get(), &texSrvDesc, hDescriptor);
+
+    //  기본 텍스처(체크무늬)에게 "너는 2번 서랍장에 있어"라고 명찰을 달아줍니다. 
+    mDefaultTexture->SrvGpuHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(mCbvHeap->GetGPUDescriptorHandleForHeapStart(), 2, mCbvSrvUavDescriptorSize);
+
 
     //   [3~5번 칸]: 임시 도화지 3장(Offscreen) 세팅  
     for (int i = 0; i < OffscreenBufferCount; ++i)
@@ -948,12 +1027,25 @@ void D3D12Renderer::RenderScene()
 
     D3D12_INDEX_BUFFER_VIEW ibv = mDefaultBoxMesh->GetIndexBufferView(); // 메시에서 인덱스 뷰 획득
     mCommandList->IASetIndexBuffer(&ibv); // 파이프라인 장착
-
-    //  무조건 100개를 그리는 게 아니라, Update에서 걸러낸 '메시 컴포넌트를 가진 진짜 수량(mInstanceCountToDraw)'만큼만 그립니다! 
-    if (mInstanceCountToDraw > 0) // 그릴 녀석이 1명이라도 존재할 때만 드로우 콜 발사
+    // 거대한 단 1번의 그리기를 쪼개어, '같은 텍스처를 쓰는 그룹(Batch)' 단위로 반복해서 그립니다! 
+       // 성능(Instancing)과 유연성(다중 텍스처)을 모두 잡은 궁극의 최적화입니다.
+    for (auto& batch : mRenderBatches)
     {
-        mCommandList->DrawIndexedInstanced(mDefaultBoxMesh->GetIndexCount(), mInstanceCountToDraw, 0, 0, 0); // 그리기!
+        // 이 그룹이 사용할 텍스처를 서랍장에서 찾아 파이프라인 2번 칸에 꽂습니다.
+        if (batch.Mat && batch.Mat->DiffuseMap) {
+            mCommandList->SetGraphicsRootDescriptorTable(2, batch.Mat->DiffuseMap->SrvGpuHandle);
+        }
+        else {
+            mCommandList->SetGraphicsRootDescriptorTable(2, mDefaultTexture->SrvGpuHandle);
+        }
+        //  셰이더에게 "이번에 그릴 녀석들은 명부의 batch.StartInstance 번호부터 시작해!" 라고 상수로 직접 쏴줍니다. 
+        mCommandList->SetGraphicsRoot32BitConstant(4, batch.StartInstance, 0);
+
+        //  DX12는 StartInstanceLocation 인자를 셰이더(SV_InstanceID)에 자동 반영해주지 않습니다!
+        // 어차피 우리가 방금 상수로 넘겨서 셰이더 내부에서 더할 것이므로, API 호출 시에는 무조건 0으로 고정합니다. 
+        mCommandList->DrawIndexedInstanced(mDefaultBoxMesh->GetIndexCount(), batch.InstanceCount, 0, 0, 0);
     }
+    //  --------------------------------------------------------------------------------------------------- 
 
     //   [수정 지점] 여기서부터 3D 세상 배경이 될 스카이박스를 그립니다!  
     mCommandList->SetPipelineState(mPsoSkybox.Get()); // 스카이박스 전용 셰이더로 교체
@@ -1213,6 +1305,9 @@ void D3D12Renderer::RenderShadows()
 
     if (mInstanceCountToDraw > 0) // 그려야 할 상자가 있다면
     { // 조건문 시작
+
+           //  그림자는 모든 물체를 '한 번에 통째로(0번부터 끝까지)' 찍어내므로 시작 번호는 0번입니다. 
+        mCommandList->SetGraphicsRoot32BitConstant(4, 0, 0);
         // 단 1번의 인스턴싱 드로우 콜로 100개의 상자를 태양 시점 텍스처에 깊이값으로 고속으로 찍어냅니다!
         mCommandList->DrawIndexedInstanced(mDefaultBoxMesh->GetIndexCount(), mInstanceCountToDraw, 0, 0, 0);
     } // 조건문 끝

@@ -35,7 +35,10 @@ void Texture::CreateCheckerboard(ID3D12Device* device, ID3D12GraphicsCommandList
         D3D12_RESOURCE_STATE_COPY_DEST, // 처음에는 CPU의 데이터를 복사받을 목적지(COPY_DEST) 상태로 생성합니다.
         nullptr, IID_PPV_ARGS(&mTexture)); // 생성된 텍스처 객체를 멤버 변수에 쏙 담습니다.
 
-    const UINT64 uploadBufferSize = texWidth * texHeight * texPixelSize; // 총 몇 바이트를 복사해야 하는지 계산합니다.
+    //  텍스처 크기를 내가 짐작해서 할당하지 않고, DX12에게 256바이트 정렬이 적용된 '진짜 필요한 메모리 크기'를 물어봅니다! 
+    UINT64 uploadBufferSize = 0;
+    device->GetCopyableFootprints(&texDesc, 0, 1, 0, nullptr, nullptr, nullptr, &uploadBufferSize);
+
     CD3DX12_HEAP_PROPERTIES uploadHeap(D3D12_HEAP_TYPE_UPLOAD); // CPU가 덮어쓸 수 있는 시스템 메모리(업로드 힙)를 선택합니다.
     CD3DX12_RESOURCE_DESC bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(uploadBufferSize); // 전송용 임시 버퍼의 크기를 설정합니다.
 
@@ -44,7 +47,7 @@ void Texture::CreateCheckerboard(ID3D12Device* device, ID3D12GraphicsCommandList
         &uploadHeap, D3D12_HEAP_FLAG_NONE, &bufferDesc, // 업로드 힙과 스펙을 전달합니다.
         D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&mUploadHeap)); // 생성된 임시 버퍼를 변수에 담습니다.
 
-    std::vector<uint8_t> textureData(uploadBufferSize); // CPU에서 색상을 계산해 둘 거대한 1차원 배열을 만듭니다.
+    std::vector<uint8_t> textureData(texWidth * texHeight * texPixelSize); // CPU에서 색상을 계산해 둘 거대한 1차원 배열을 만듭니다.
     for (UINT y = 0; y < texHeight; y++) // 텍스처의 세로 픽셀 수만큼 루프를 돕니다.
     { // 외부 루프 시작입니다.
         for (UINT x = 0; x < texWidth; x++) // 텍스처의 가로 픽셀 수만큼 루프를 돕니다.
@@ -92,6 +95,7 @@ bool Texture::LoadFromFile(const std::wstring& filepath, ID3D12Device* device, I
     hr = wicFactory->CreateDecoderFromFilename(filepath.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &decoder);
     if (FAILED(hr)) return false; // 파일이 존재하지 않거나 경로가 틀리면 여기서 실패합니다!
 
+
     Microsoft::WRL::ComPtr<IWICBitmapFrameDecode> frame; // 이미지의 첫 번째 프레임(보통 사진은 1장)을 담을 포인터입니다.
     hr = decoder->GetFrame(0, &frame); // 디코더에서 0번째 원본 프레임을 추출합니다.
     if (FAILED(hr)) return false; // 프레임 추출 실패 시 반환합니다.
@@ -138,8 +142,13 @@ bool Texture::LoadFromFile(const std::wstring& filepath, ID3D12Device* device, I
         D3D12_RESOURCE_STATE_COPY_DEST, // 데이터를 받아야 하므로 복사 목적지 상태로 생성합니다.
         nullptr, IID_PPV_ARGS(&mTexture)); // 멤버 변수에 텍스처를 저장합니다.
 
+
+    // 어떤 해상도의 이미지가 들어오더라도 DX12의 256바이트 정렬 규약을 완벽히 맞춘 업로드 버퍼 크기를 얻어옵니다! 
+    UINT64 requiredUploadSize = 0;
+    device->GetCopyableFootprints(&texDesc, 0, 1, 0, nullptr, nullptr, nullptr, &requiredUploadSize);
+
     CD3DX12_HEAP_PROPERTIES uploadHeap(D3D12_HEAP_TYPE_UPLOAD); // CPU에서 덮어쓸 임시 시스템 메모리(업로드 힙)를 선택합니다.
-    CD3DX12_RESOURCE_DESC bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(imageSize); // 이미지 전체 크기만큼 설정합니다.
+    CD3DX12_RESOURCE_DESC bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(requiredUploadSize); // 이미지 전체 크기만큼 설정합니다.
     device->CreateCommittedResource( // 업로드 버퍼를 메모리에 생성합니다.
         &uploadHeap, D3D12_HEAP_FLAG_NONE, &bufferDesc, // 스펙을 넘깁니다.
         D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&mUploadHeap)); // 변수에 저장합니다.

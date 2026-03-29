@@ -133,7 +133,8 @@ PSInput VSMain(VSInput input)
     output.Color = input.Color * gInstanceData[realInstanceID].BaseColor;
     output.Emissive = gInstanceData[realInstanceID].Emissive;
     
-    output.TexC = input.TexC + float2(gTotalTime * 0.1f, gTotalTime * 0.1f); //    텍스처 애니메이션!
+    // 행성이 대각선으로 흘러내리게 하던 UV 애니메이션을 지우고, 순수하게 C++의 자전 방향으로만 돌게 둡니다! 
+    output.TexC = input.TexC;
     
     output.ShadowPos = mul(posW, gLightTransform); //    그림자 맵에서의 내 위치(UV)를 계산합니다.
     
@@ -182,22 +183,38 @@ PSOutput PSMain(PSInput input)
     float specFactor = pow(saturate(dot(normal, halfVec)), 64.0f);
     float3 specular = (diffuseFactor > 0.0f) ? (specFactor * gLightColor.rgb * 0.5f) : float3(0.0f, 0.0f, 0.0f);
 
-    // --- [그림자(Shadow) 연산 시작!] ---
-    float shadowFactor = 1.0f; //    기본은 그림자 없음(1.0)
+  // PCF (Percentage-Closer Filtering) 부드러운 그림자 연산 
+    float shadowFactor = 0.0f;
+    input.ShadowPos.xyz /= input.ShadowPos.w;
     
-    input.ShadowPos.xyz /= input.ShadowPos.w; //    UV 좌표 정규화
+    // 2048 해상도 섀도우 맵 기준 1픽셀의 간격입니다.
+    float dx = 1.0f / 2048.0f;
     
-    //   [최적화 수정] 성능을 갉아먹는 if문(분기문)을 완전히 삭제하고 하드웨어와 수학 연산에 맡깁니다!  
+    // 픽셀 주변 3x3(9개) 격자를 돌며 그림자 여부를 검사하고 평균을 냅니다.
+    for (int y = -1; y <= 1; ++y)
+    {
+        for (int x = -1; x <= 1; ++x)
+        {
+            float2 offset = float2(x, y) * dx;
+            shadowFactor += gShadowMap.SampleCmpLevelZero(gsSamShadow, input.ShadowPos.xy + offset, input.ShadowPos.z - 0.003f).r;
+        }
+    }
+    shadowFactor /= 9.0f; // 9번 더했으므로 평균값 산출
     
-    // 1. 하드웨어 처리: 범위를 벗어난 X, Y 좌표는 위에서 설정한 '하얀색 테두리(OPAQUE_WHITE)' 덕분에 자동으로 1.0을 반환합니다.
-    shadowFactor = gShadowMap.SampleCmpLevelZero(gsSamShadow, input.ShadowPos.xy, input.ShadowPos.z - 0.003f).r;
-    
-    // 2. 수학적 처리: Z값(거리)이 1.0을 넘어가 빛의 도달 범위를 벗어나면 강제로 그림자를 없앱니다.
-    // step(a, x) 함수는 x가 a보다 크면 1.0, 작으면 0.0을 반환합니다. (if문 없이 분기 처리하는 고급 셰이더 스킬!)
     shadowFactor = max(shadowFactor, step(1.0f, input.ShadowPos.z));
-    
     shadowFactor = shadowFactor * 0.5f + 0.5f;
-    // ------------------------------------------
+
+    
+     // 대기권 산란(Rim Lighting / Fresnel) 연산 
+    // 시선과 픽셀의 방향이 수직(테두리)에 가까울수록 수치가 1.0으로 올라갑니다.
+    float rim = 1.0f - saturate(dot(viewVec, normal));
+    
+    // 0.6 미만은 0으로 날려버려, 아주 얇은 외곽선에만 빛이 맺히도록 깎아냅니다.
+    rim = smoothstep(0.6f, 1.0f, rim);
+    
+    // 텍스처 고유의 색상에 맞춰 테두리 빛을 뿜어냅니다! (지구는 파란 테두리, 달은 회색 테두리)
+    float3 rimColor = baseColor.rgb * rim * 1.5f;
+
     
     
      // --- 2.  점광원 (Point Light) 연산 시작!  ---
@@ -233,6 +250,7 @@ PSOutput PSMain(PSInput input)
     // 3. 최종 색상 합성! (표면색 * (환경광 + 방향광) + 점광원 + 발광)
     float3 finalColor = (baseColor.rgb * (ambient + diffuse * shadowFactor)) + (specular * shadowFactor);
     finalColor += finalPointColor; //  새로 구한 점광원 불빛 얹기!
+    finalColor += rimColor; // 림 라이트 적용
     finalColor += input.Emissive;
     
     output.Color = float4(finalColor, 1.0f);

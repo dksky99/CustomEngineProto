@@ -58,7 +58,12 @@ struct InstanceData
     //  셰이더와 크기를 맞추기 위해 아래 3줄을 반드시 추가해야 합니다! 
     DirectX::XMFLOAT4 BaseColor = { 1.0f, 1.0f, 1.0f, 1.0f };
     DirectX::XMFLOAT3 Emissive = { 0.0f, 0.0f, 0.0f };
-    float padding = 0.0f;
+
+
+    //  CPU에서 GPU로 거칠기와 금속성 수치도 함께 쏴줍니다! 
+    float Roughness = 0.5f;
+    float Metallic = 0.0f;
+    DirectX::XMFLOAT3 padding = { 0.0f, 0.0f, 0.0f }; // 16바이트 정렬을 위해 남은 12바이트(float3)를 빈칸으로 채웁니다.
 };
 // 
 //같은 텍스처(재질)를 공유하는 물체들을 묶어 한 번에 그리기 위한 '배치(Batch) 그룹' 명부입니다! 

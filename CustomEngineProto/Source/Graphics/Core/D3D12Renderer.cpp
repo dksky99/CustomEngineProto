@@ -384,10 +384,15 @@ void D3D12Renderer::Update(float deltaTime, Scene* scene, CameraComponent* camer
                 instData.BaseColor = mat->DiffuseAlbedo;
                 instData.Emissive = mat->Emissive;
                 matBatches[mat.get()].push_back(instData); // 자기 재질 바구니에 데이터를 쏙 넣습니다.
+                // 머티리얼의 물리 수치를 인스턴스 배열로 복사합니다. 
+                instData.Roughness = mat->Roughness;
+                instData.Metallic = mat->Metallic;
             }
             else {
                 instData.BaseColor = { 1.0f, 1.0f, 1.0f, 1.0f };
                 instData.Emissive = { 0.0f, 0.0f, 0.0f };
+                instData.Roughness = 0.5f;
+                instData.Metallic = 0.0f;
                 matBatches[nullptr].push_back(instData); // 재질이 없으면 널 포인터 바구니에 넣습니다.
             }
         }

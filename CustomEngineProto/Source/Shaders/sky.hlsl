@@ -33,6 +33,12 @@ struct VSInput
     float4 Color : COLOR; // 색상 (안 씀)
     float3 Normal : NORMAL; // 법선 (안 씀)
     float2 TexC : TEXCOORD; // UV (안 씀)
+    
+    //  C++에서 'TANGENT(접선)' 데이터를 보내도록 파이프라인 규칙이 바뀌었습니다!
+    // 스카이박스는 이 접선 값을 실제로 쓰진 않지만, C++과 서명(Signature)을 완벽히 맞추기 위해 
+    // 반드시 입력 변수로 받아주어야만 DX12 초기화 에러(파이프라인 생성 실패)가 나지 않습니다.
+    float3 Tangent : TANGENT;
+    
     uint instanceID : SV_InstanceID; // 자신이 몇 번째 큐브인지 알려주는 번호표입니다.
 };
 
@@ -58,7 +64,9 @@ PSInput VSMain(VSInput input)
     // 월드 공간의 좌표를 카메라가 보는 화면 좌표(ViewProj)로 압축합니다.
     output.PosH = mul(posW, gViewProj);
     
-  
+   // z와 w가 완전히 똑같으면 부동소수점 오차로 화면에서 날아갑니다.
+    // 0.99999f를 곱해주어 가장 뒤에 배경으로 깔리면서도 절대 화면에서 잘리지 않게 보호합니다! 
+    output.PosH.z = output.PosH.w * 0.99999f;
     
     // 큐브의 중심(0,0,0)에서 각 꼭짓점으로 향하는 지역 좌표 자체가 곧 '방향 벡터'가 됩니다. 이를 그대로 넘깁니다.
     output.PosL = input.Pos;

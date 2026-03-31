@@ -39,7 +39,9 @@ struct InstanceData
     float4x4 World;
     float4 BaseColor; // C++에서 보낸 색상
     float3 Emissive; // C++에서 보낸 발광
-    float pad;
+    float Roughness; // 추가됨!
+    float Metallic; // 추가됨!
+    float3 pad; // 추가됨!
 };
 //    100개의 큐브 위치 데이터가 담긴 배열(명부)을 통째로 t1 레지스터로 받습니다!   
 StructuredBuffer<InstanceData> gInstanceData : register(t1);
@@ -83,6 +85,10 @@ struct PSInput
     
      //픽셀 셰이더로 넘겨줄 발광(Glow) 데이터를 위한 배달 상자 추가 
     float3 Emissive : TEXCOORD5;
+    
+     //  거칠기와 금속성을 픽셀 셰이더로 배달할 변수(주머니)를 추가합니다! 
+    float Roughness : TEXCOORD6;
+    float Metallic : TEXCOORD7;
     
       // 월드 공간으로 변환된 접선 벡터를 픽셀 셰이더로 넘겨줍니다.
     float3 TangentW : TANGENT;
@@ -145,6 +151,9 @@ PSInput VSMain(VSInput input)
      // 색상과 발광 데이터도 '진짜 인덱스'로 꺼내옵니다.
     output.Color = input.Color * gInstanceData[realInstanceID].BaseColor;
     output.Emissive = gInstanceData[realInstanceID].Emissive;
+     //  버텍스 셰이더에서 미리 꺼낸 다음, 픽셀 셰이더로 보낼 배달 상자(output)에 넣습니다! 
+    output.Roughness = gInstanceData[realInstanceID].Roughness;
+    output.Metallic = gInstanceData[realInstanceID].Metallic;
     
     // 행성이 대각선으로 흘러내리게 하던 UV 애니메이션을 지우고, 순수하게 C++의 자전 방향으로만 돌게 둡니다! 
     output.TexC = input.TexC;
@@ -154,6 +163,38 @@ PSInput VSMain(VSInput input)
     return output;
 }
 
+
+// ============================================================================
+//  [마법의 공식] 물리 기반 렌더링(PBR) 3대 수학 함수 
+// ============================================================================
+static const float PI = 3.14159265359f; // 파이(원주율) 상수입니다. 빛이 퍼지는 양을 계산할 때 씁니다.
+
+// 1. 미세표면 분포 함수 (D): 표면의 미세한 굴곡이 빛을 얼마나 한 곳으로 모아주는지(광택의 선명도) 계산합니다.
+float D_GGX(float NdotH, float roughness) // 법선과 하프벡터의 내적, 거칠기를 받습니다.
+{ // D 함수 시작
+    float alpha = roughness * roughness; // 시각적 자연스러움을 위해 거칠기를 제곱하여 사용합니다.
+    float alpha2 = alpha * alpha; // 공식에 맞게 한 번 더 제곱합니다.
+    float denom = NdotH * NdotH * (alpha2 - 1.0f) + 1.0f; // 분모 부분의 식을 계산합니다.
+    return alpha2 / (PI * denom * denom + 0.0001f); // 최종 GGX 공식을 반환합니다. (0으로 나누기 방지 0.0001f)
+} // D 함수 끝
+
+// 2. 기하 감쇠 함수 (G): 표면의 미세한 굴곡들이 서로 빛을 가려서 그림자 지는 현상을 시뮬레이션합니다.
+float G_SchlickGGX(float NdotV, float NdotL, float roughness) // 시선 내적, 조명 내적, 거칠기를 받습니다.
+{ // G 함수 시작
+    float r = roughness + 1.0f; // 직접 조명에 맞는 거칠기 조정을 합니다.
+    float k = (r * r) / 8.0f; // k 상수를 계산합니다.
+    float gV = NdotV / (NdotV * (1.0f - k) + k + 0.0001f); // 시선 방향의 가려짐을 계산합니다.
+    float gL = NdotL / (NdotL * (1.0f - k) + k + 0.0001f); // 조명 방향의 가려짐을 계산합니다.
+    return gV * gL; // 두 가려짐 확률을 곱해 최종 그림자 율을 반환합니다.
+} // G 함수 끝
+
+// 3. 프레넬 함수 (F): 물체를 비스듬히 볼수록 거울처럼 반사율이 급격히 높아지는 물리 현상을 시뮬레이션합니다.
+float3 F_Schlick(float HdotV, float3 F0) // 시선과 하프벡터의 내적, 기본 반사율을 받습니다.
+{ // F 함수 시작
+    // 정면에서 본 반사율(F0)에다가, 각도에 따라 반사율이 1.0(하얀색)으로 올라가는 곡선을 더해 반환합니다.
+    return F0 + (1.0f - F0) * pow(saturate(1.0f - HdotV), 5.0f);
+} // F 함수 끝
+// ============================================================================
 //    2. 픽셀 셰이더의 메인 함수입니다.   
 PSOutput PSMain(PSInput input)
 {
@@ -203,23 +244,29 @@ PSOutput PSMain(PSInput input)
     // 7. 이 가짜 방향에 TBN 행렬을 곱하면, 둥근 표면의 각도에 딱 맞게 진짜처럼 찌그러진 새로운 법선이 완성됩니다!
     bumpedNormalW = normalize(mul(bumpedNormalW, TBN));
     
-     // 이후의 모든 조명 계산은 원래 Normal 대신, 이 찌그러진 bumpedNormalW를 사용합니다!
-    // ------------------------------------------------------------------------------------------------
+    // =====================================================================
+    // [PBR 초기 변수 세팅] 
+    // ====================================================================
+   //  에러의 주범 해결! 배열에서 강제로 꺼내지 않고, 배달 온 상자(input)에서 바로 꺼내 씁니다! 
+    // 0.0이 되면 수학 연산 중 0으로 나누기 에러가 나므로 거칠기의 최솟값을 0.05로 제한합니다.
+    float roughness = max(input.Roughness, 0.05f);
+    float metallic = saturate(input.Metallic); // 0.0 ~ 1.0 사이로 자릅니다.
     
-    float3 lightVec = normalize(-gLightDir);
-    float3 viewVec = normalize(gEyePosW - input.PosW);
+    // 조명 계산에 쓸 최종 법선(N)을 찌그러진 노멀맵 법선으로 교체합니다!
+    float3 N = bumpedNormalW;
+    // 내 픽셀에서 카메라(눈)를 향하는 방향 벡터(V)를 구합니다.
+    float3 V = normalize(gEyePosW - input.PosW);
+    // 법선(N)과 시선(V)의 내적 값(각도)을 구합니다. 음수가 되지 않게 max로 막아줍니다.
+    float NdotV = max(dot(N, V), 0.0f);
     
-     //   [안전 장치 2] 빛이 닿지 않는 완벽한 역광(그림자) 상태에서도 큐브가 뚜렷하게 보이도록 기본 밝기를 60%로 확 끌어올립니다!  
-    float3 ambient = float3(0.6f, 0.6f, 0.6f);
+    // F0: 기본 반사율입니다. 비금속 물질은 보통 4%(0.04)의 빛만 반사합니다.
+    float3 F0 = float3(0.04f, 0.04f, 0.04f);
+    // 금속성(metallic)이 높을수록 기본 반사율이 자신의 텍스처 색상(baseColor)을 따라가게 섞어줍니다.
+    F0 = lerp(F0, baseColor.rgb, metallic);
     
-     //  여기 원래 normal이 있던 자리에 bumpedNormalW 가 들어갑니다!
-    float diffuseFactor = saturate(dot(bumpedNormalW, lightVec));//표면 밝기 계산
-    float3 diffuse = diffuseFactor * gLightColor.rgb;
-    
-    float3 halfVec = normalize(lightVec + viewVec); //    광택 연산
-     //  광택 계산 시에도 들어갑니다! 
-    float specFactor = pow(saturate(dot(bumpedNormalW, halfVec)), 64.0f);
-    float3 specular = (diffuseFactor > 0.0f) ? (specFactor * gLightColor.rgb * 0.5f) : float3(0.0f, 0.0f, 0.0f);
+    // 픽셀이 최종적으로 받게 될 빛의 에너지를 차곡차곡 누적할 변수(Lo)입니다. 초기값은 까만색입니다.
+    float3 Lo = float3(0.0f, 0.0f, 0.0f);
+    // =====================================================================
 
   // PCF (Percentage-Closer Filtering) 부드러운 그림자 연산 
     float shadowFactor = 0.0f;
@@ -242,57 +289,92 @@ PSOutput PSMain(PSInput input)
     shadowFactor = max(shadowFactor, step(1.0f, input.ShadowPos.z));
     shadowFactor = shadowFactor * 0.5f + 0.5f;
 
-    
+      //  [문제 1 해결] 누락되어 화면을 까맣게 만들었던 '방향광(우주 배경빛) PBR 연산'을 복구합니다!  
+    float3 L = normalize(-gLightDir); // 빛이 날아오는 방향의 반대(픽셀에서 빛을 향하는 방향)를 구합니다.
+    float3 H = normalize(V + L); // 시선(V)과 빛(L)의 정확히 중간을 가리키는 하프(Half) 벡터를 구합니다.
+
+    float NdotL = max(dot(N, L), 0.0f); // 법선과 빛 방향의 내적 (빛을 정면으로 받을수록 밝아짐)
+    float NdotH = max(dot(N, H), 0.0f); // 법선과 하프 벡터의 내적 (정반사 계산용)
+    float HdotV = max(dot(H, V), 0.0f); // 하프 벡터와 시선의 내적 (프레넬 효과 계산용)
+
+    float NDF = D_GGX(NdotH, roughness); // [PBR 1] 미세 굴곡 분포: 매끄러울수록 빛을 한 곳으로 모아줍니다.
+    float G_val = G_SchlickGGX(NdotV, NdotL, roughness); // [PBR 2] 기하 감쇠: 표면의 미세한 돌기가 스스로 빛을 가리는 현상입니다.
+    float3 F = F_Schlick(HdotV, F0); // [PBR 3] 프레넬 효과: 비스듬히 볼수록 거울처럼 반사율이 치솟는 현상입니다.
+
+    float3 numerator = NDF * G_val * F; // 3대 공식을 모두 곱하여 반사되는 빛의 분자를 만듭니다.
+    float denominator = 4.0f * NdotV * NdotL + 0.0001f; // 에너지 보존 법칙을 지키기 위한 분모입니다. (0 나누기 에러 방지)
+    float3 specular = numerator / denominator; // 최종적으로 튕겨 나가는 빛(정반사광)의 에너지가 산출되었습니다.
+
+    float3 kS = F; // 거울처럼 튕겨 나간 빛의 비율을 프레넬 값(F)으로 정합니다.
+    float3 kD = float3(1.0f, 1.0f, 1.0f) - kS; // 전체 빛(1.0)에서 튕겨 나간 빛(kS)을 빼면, 표면에 스며드는 빛(난반사광)의 비율이 됩니다.
+    kD *= 1.0f - metallic; // 금속(Metallic)은 빛을 스며들지 못하게 튕겨내므로, 금속성이 높을수록 난반사광을 0으로 지웁니다.
+
+    // 스며든 빛과 튕겨 나간 빛을 합치고, 빛의 본래 색상과 각도, 그림자 여부를 곱해 최종 빛 에너지 저장소(Lo)에 누적합니다!
+    Lo += (kD * baseColor.rgb / PI + specular) * gLightColor.rgb * NdotL * shadowFactor;
+
+
      // 대기권 산란(Rim Lighting / Fresnel) 연산 
     // 시선과 픽셀의 방향이 수직(테두리)에 가까울수록 수치가 1.0으로 올라갑니다.
      //  테두리 빛도 찌그러진 노멀맵을 사용합니다!
-    float rim = 1.0f - saturate(dot(viewVec, bumpedNormalW));
-    
+    //  [문제 2 해결] 에러를 내던 옛날 변수 'viewVec'을 새로운 PBR 시선 변수인 'V'로 완벽하게 교체했습니다!  
+    float rim = 1.0f - saturate(dot(V, bumpedNormalW));
+
     // 0.6 미만은 0으로 날려버려, 아주 얇은 외곽선에만 빛이 맺히도록 깎아냅니다.
     rim = smoothstep(0.6f, 1.0f, rim);
-    
+
     // 텍스처 고유의 색상에 맞춰 테두리 빛을 뿜어냅니다! (지구는 파란 테두리, 달은 회색 테두리)
     float3 rimColor = baseColor.rgb * rim * 1.5f;
 
-    
-    
+
+
      // --- 2.  점광원 (Point Light) 연산 시작!  ---
     // 픽셀의 현재 위치에서 점광원(태양)까지의 3D 화살표(벡터)를 만듭니다.
     float3 pointLightVec = gPointLightPosW - input.PosW;
     // 화살표의 길이 = 빛의 근원지까지의 실제 거리(미터)입니다.
     float d = length(pointLightVec);
-    
-    float3 finalPointColor = float3(0.0f, 0.0f, 0.0f); // 초기값은 까만색
 
     // 거리가 소멸 거리(FalloffEnd)보다 가까울 때만 셰이더 연산을 합니다! (최적화) if문일지라도 if문안의 내용이 더 무겁다면 if문을 써야한다.
     if (d < gPointLightFalloffEnd)
     {
-        pointLightVec /= d; // 거리를 구했으니 화살표 길이를 1로 정규화(Normalize)합니다.
-        
-        // 방향광과 똑같이 빛의 각도를 검사해 명암(Diffuse)과 광택(Specular)을 구합니다.
-        float pointDiffuseFactor = saturate(dot(bumpedNormalW, pointLightVec));
-        float3 pointDiffuse = pointDiffuseFactor * gPointLightColor.rgb;
-        
-        float3 pointHalfVec = normalize(pointLightVec + viewVec);
-        float pointSpecFactor = pow(saturate(dot(bumpedNormalW, pointHalfVec)), 64.0f);
-        float3 pointSpecular = (pointDiffuseFactor > 0.0f) ? (pointSpecFactor * gPointLightColor.rgb * 0.5f) : float3(0.0f, 0.0f, 0.0f);
-        
+        //  [수정점] 옛날 낡은 공식을 지우고, 점광원도 PBR 공식으로 완벽하게 업그레이드했습니다! 
+        float3 L_pt = pointLightVec / d; // 화살표를 거리로 나누어 길이가 1인 방향 벡터로 정규화합니다.
+        float3 H_pt = normalize(V + L_pt); // 여기서도 에러 원인이었던 viewVec 대신 V를 사용합니다!
+
+        float NdotL_pt = max(dot(N, L_pt), 0.0f); // 점광원 방향과의 내적
+        float NdotH_pt = max(dot(N, H_pt), 0.0f); // 점광원 하프 벡터와의 내적
+        float HdotV_pt = max(dot(H_pt, V), 0.0f); // 에러 방지를 위해 V 사용
+
+        float NDF_pt = D_GGX(NdotH_pt, roughness); // 점광원의 굴곡 분포 계산
+        float G_pt = G_SchlickGGX(NdotV, NdotL_pt, roughness); // 점광원의 기하 감쇠 계산
+        float3 F_pt = F_Schlick(HdotV_pt, F0); // 점광원의 프레넬 반사율 계산
+
+        float3 num_pt = NDF_pt * G_pt * F_pt; // 점광원 정반사 분자
+        float den_pt = 4.0f * NdotV * NdotL_pt + 0.0001f; // 점광원 정반사 분모
+        float3 spec_pt = num_pt / den_pt; // 점광원 최종 튕겨 나간 빛(정반사)
+
+        float3 kS_pt = F_pt; // 점광원의 튕겨 나간 비율
+        float3 kD_pt = float3(1.0f, 1.0f, 1.0f) - kS_pt; // 점광원의 스며든 비율
+        kD_pt *= 1.0f - metallic; // 금속은 빛을 흡수하지 않게 차단
+
         // [감쇠(Attenuation) 수학 공식] 거리가 멀어질수록 빛이 사그라드는 비율을 계산합니다. 
         // 거리가 FalloffStart보다 작으면 1.0(최대), End에 다다르면 0.0으로 부드럽게 감소시킵니다.
         float attenuation = saturate((gPointLightFalloffEnd - d) / (gPointLightFalloffEnd - gPointLightFalloffStart));
         
-        // 점광원의 최종 색상에 감쇠 비율을 곱해줍니다.
-        finalPointColor = (baseColor.rgb * pointDiffuse + pointSpecular) * attenuation;
+        // 거리에 따라 감쇠된 진짜 점광원 빛 에너지를 구합니다.
+        float3 radiance = gPointLightColor.rgb * attenuation;
+
+        // 점광원의 에너지 역시 빛 저장소(Lo)에 차곡차곡 누적(+=)해 줍니다!
+        Lo += (kD_pt * baseColor.rgb / PI + spec_pt) * radiance * NdotL_pt;
     }
     // -------------------------------------------------------------
-    
-    // 3. 최종 색상 합성! (표면색 * (환경광 + 방향광) + 점광원 + 발광)
-    float3 finalColor = (baseColor.rgb * (ambient + diffuse * shadowFactor)) + (specular * shadowFactor);
-    finalColor += finalPointColor; //  새로 구한 점광원 불빛 얹기!
-    finalColor += rimColor; // 림 라이트 적용
-    finalColor += input.Emissive;
-    
+
+    //  [문제 3 해결] 에러를 내뿜던 누락된 ambient(환경광) 변수를 새로 선언해 줍니다!  
+    float3 ambient = float3(0.05f, 0.05f, 0.08f) * baseColor.rgb; // 어두운 우주에 아주 약하게 깔린 기본 빛입니다.
+
+    //  환경광 + 방향광/점광원 PBR 에너지 총합(Lo) + 테두리 빛 + 자체 발광(Emissive) 
+    float3 finalColor = ambient + Lo + rimColor + input.Emissive;
+
     output.Color = float4(finalColor, 1.0f);
-    
+
     return output;
 }

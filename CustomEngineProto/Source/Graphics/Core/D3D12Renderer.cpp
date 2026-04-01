@@ -285,8 +285,8 @@ void D3D12Renderer::Update(float deltaTime, Scene* scene, CameraComponent* camer
     XMVECTOR lightDir = XMVectorSet(0.0f, -1.0f, 0.0f, 0.0f); // 만약 태양이 없으면 기본 빛 방향은 아래입니다.
     passConstants.LightColor = { 1.0f, 1.0f, 1.0f, 1.0f }; // 기본 색상은 흰색입니다.
 
-    //  점광원의 기본 색상을 까만색(꺼짐)으로 초기화해 둡니다. 
-    passConstants.PointLightColor = { 0.0f, 0.0f, 0.0f, 0.0f };
+    //  매 프레임 조명을 수집하기 전, 활성화된 조명 개수를 0으로 리셋합니다. 
+    passConstants.ActivePointLightCount = 0;
 
     const auto& actors = scene->GetActors(); // 씬 명부를 가져옵니다.
     for (auto& actor : actors)
@@ -307,17 +307,28 @@ void D3D12Renderer::Update(float deltaTime, Scene* scene, CameraComponent* camer
             // 부품에 기록된 최신 밝기 색상을 그대로 가져와 GPU에 쏠 택배 상자에 담습니다.
             passConstants.LightColor = lightComp->LightColor;
             }
+            //   만약 빛의 타입이 점광원(Point Light)이라면 배열에 수집합니다!  
             else if (lightComp->Type == ELightType::Point)
             {
-                // 점광원은 '위치'가 중요하므로, 부모-자식 계층 구조가 적용된 '최종 월드 행렬'에서 위치를 빼옵니다!
-                XMMATRIX worldMat = actor->GetTransform()->GetWorldMatrix();
-                XMVECTOR scale, rot, pos;
-                XMMatrixDecompose(&scale, &rot, &pos, worldMat); // 행렬을 분해(Decompose)하여 위치만 쏙 빼냅니다.
+                //   현재 배열에 들어간 점광원이 최대 제한 개수(4개)보다 적을 때만 수집합니다. (메모리 초과 방어)  
+                if (passConstants.ActivePointLightCount < MAX_POINT_LIGHTS)
+                {
+                    //   현재 이 데이터를 집어넣을 배열의 빈칸 인덱스 번호입니다.  
+                    int idx = passConstants.ActivePointLightCount;
 
-                XMStoreFloat3(&passConstants.PointLightPosW, pos); // 쪼갠 위치를 구조체에 넣습니다.
-                passConstants.PointLightColor = lightComp->LightColor;
-                passConstants.PointLightFalloffStart = lightComp->FalloffStart;
-                passConstants.PointLightFalloffEnd = lightComp->FalloffEnd;
+                    XMMATRIX worldMat = actor->GetTransform()->GetWorldMatrix(); // 부모-자식 계층이 모두 적용된 최종 월드 행렬을 가져옵니다.
+                    XMVECTOR scale, rot, pos; // 행렬을 쪼개어 담을 임시 변수들입니다.
+                    XMMatrixDecompose(&scale, &rot, &pos, worldMat); // 월드 행렬을 분해하여 순수한 3D 월드 위치(pos)만 쏙 뽑아냅니다.
+
+                    //   뽑아낸 위치 정보와 조명 설정값들을 배열의 [idx] 번째 칸에 복사해 넣습니다.  
+                    XMStoreFloat3(&passConstants.PointLights[idx].PosW, pos);
+                    passConstants.PointLights[idx].Color = lightComp->LightColor;
+                    passConstants.PointLights[idx].FalloffStart = lightComp->FalloffStart;
+                    passConstants.PointLights[idx].FalloffEnd = lightComp->FalloffEnd;
+
+                    //   유효한 조명을 배열에 넣었으므로 활성 조명 개수를 1 증가시킵니다.  
+                    passConstants.ActivePointLightCount++;
+                }
             }
             
         } // 조건문 끝

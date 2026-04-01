@@ -2,7 +2,7 @@
 
 GameTimer::GameTimer() // GameTimer 생성자의 구현부입니다.
     : mSecondsPerCount(0.0), mDeltaTime(-1.0), mBaseTime(0), // 콜론(:) 초기화 리스트를 사용해 변수들을 0이나 초기 상태로 세팅합니다.
-    mPausedTime(0), mPrevTime(0), mCurrTime(0), mStopped(false) // 일시정지 누적 시간, 이전/현재 시간, 정지 플래그를 모두 초기화합니다.
+    mPausedTime(0), mPrevTime(0), mCurrTime(0), mTotalTime(0), mStopped(false) // 일시정지 누적 시간, 이전/현재 시간, 정지 플래그를 모두 초기화합니다.
 { // 생성자 본문 시작
     __int64 countsPerSec; // 1초당 하드웨어 타이머가 몇 번 카운트되는지(주파수)를 담을 변수를 선언합니다.
     QueryPerformanceFrequency((LARGE_INTEGER*)&countsPerSec); // 운영체제에 고해상도 타이머의 주파수를 질의하여 변수에 채워 넣습니다.
@@ -41,9 +41,15 @@ void GameTimer::Tick() // 매 프레임 호출되어 시간을 갱신하는 함수의 구현부입니다
     mDeltaTime = (mCurrTime - mPrevTime) * mSecondsPerCount;
 
     mPrevTime = mCurrTime; // 다음 프레임의 계산을 위해, 방금 측정한 현재 시간을 이전 시간(mPrevTime) 변수에 덮어씁니다.
-
+    mTotalTime += mDeltaTime;
     if (mDeltaTime < 0.0) // 프로세서 절전 모드 전환이나 멀티코어 버그 등으로 델타 타임이 음수가 나오는 희귀한 예외 상황을 검사합니다.
     { // 예외 처리 블록 시작
         mDeltaTime = 0.0; // 물리엔진 등이 역주행하는 치명적인 오류를 막기 위해 델타 타임을 0으로 강제 보정합니다.
     } // 예외 처리 블록 끝
 } // Tick 함수 끝
+
+float GameTimer::TotalTime() const
+{
+
+    return (float)mTotalTime;
+}

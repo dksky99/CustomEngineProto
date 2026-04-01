@@ -190,6 +190,38 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     scene.AddActor(floor);
 
     // -----------------------------------------------------------------------------------
+    //  화려한 다중 점광원 3형제를 새롭게 스폰합니다! 
+    // 1번 빛: 붉은색 사이렌 조명 액터를 만듭니다.
+    std::shared_ptr<Actor> redLightActor = std::make_shared<Actor>();
+    std::shared_ptr<LightComponent> redLight = std::make_shared<LightComponent>(); // 빛을 뿜는 부품을 만듭니다.
+    redLight->Type = ELightType::Point; // 방향광이 아니라 '점광원'이라고 선언합니다. (회원님의 enum을 따릅니다)
+    redLight->LightColor = { 5.0f, 0.2f, 0.2f, 1.0f }; // 아주 강렬한 붉은빛으로 설정합니다. (PBR 반응 극대화)
+    redLight->FalloffStart = 2.0f; // 2미터까지는 눈부시게 밝습니다.
+    redLight->FalloffEnd = 15.0f; // 15미터가 넘어가면 붉은빛이 소멸합니다.
+    redLightActor->AddComponent(redLight); // 부품을 몸통에 장착합니다!
+    scene.AddActor(redLightActor); // 씬에 배치합니다.
+
+    // 2번 빛: 푸른색 코어 조명을 만듭니다.
+    std::shared_ptr<Actor> blueLightActor = std::make_shared<Actor>();
+    std::shared_ptr<LightComponent> blueLight = std::make_shared<LightComponent>();
+    blueLight->Type = ELightType::Point;
+    blueLight->LightColor = { 0.2f, 0.2f, 5.0f, 1.0f }; // 강렬한 푸른빛!
+    blueLight->FalloffStart = 2.0f;
+    blueLight->FalloffEnd = 15.0f;
+    blueLightActor->AddComponent(blueLight);
+    scene.AddActor(blueLightActor);
+
+    // 3번 빛: 초록색 반딧불 조명을 만듭니다.
+    std::shared_ptr<Actor> greenLightActor = std::make_shared<Actor>();
+    std::shared_ptr<LightComponent> greenLight = std::make_shared<LightComponent>();
+    greenLight->Type = ELightType::Point;
+    greenLight->LightColor = { 0.2f, 5.0f, 0.2f, 1.0f }; // 강렬한 초록빛!
+    greenLight->FalloffStart = 2.0f;
+    greenLight->FalloffEnd = 15.0f;
+    greenLightActor->AddComponent(greenLight);
+    scene.AddActor(greenLightActor);
+    // -----------------------------------------------------------------------------------
+
 
     
     
@@ -260,6 +292,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             // 달(Moon)도 자기 자신을 빠르게 자전시킵니다.
             moonActor->GetTransform()->Rotation.y += timer.DeltaTime() * 5.0f;
             // -----------------------------------------------------------------------------------
+
+             //  3가지 색상의 점광원을 시간의 흐름에 따라 어지럽게 날아다니도록 만듭니다! 
+            float t = timer.TotalTime(); // 게임이 켜진 후 누적된 시간(초)을 가져옵니다.
+
+            // 붉은 빛은 반경 8m 크기로 바닥(-1.5f 높이) 근처를 예쁘게 둥글게 공전합니다.
+            redLightActor->GetTransform()->Position = { cosf(t * 1.5f) * 8.0f, -1.5f, sinf(t * 1.5f) * 8.0f };
+
+            // 푸른 빛은 반경 5m 크기로 붉은 빛과 '반대 방향'(-t)으로 궤도를 교차하며 돕니다.
+            blueLightActor->GetTransform()->Position = { cosf(-t * 2.0f) * 5.0f, -1.5f, sinf(-t * 2.0f) * 5.0f };
+
+            // 초록 빛은 X축과 Z축의 주기를 다르게 주어, 8자 모양(리사주 도형)으로 어지럽게 횡단하게 만듭니다!
+            greenLightActor->GetTransform()->Position = { sinf(t * 3.0f) * 7.0f, -1.0f, sinf(t * 1.5f) * 7.0f };
+
 
 
             //   2단계: 씬 갱신! (이때 카메라 액터 안에 달린 CameraComponent도 씬을 통해 자동으로 Update 됩니다!)  

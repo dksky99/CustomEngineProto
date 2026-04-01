@@ -2,6 +2,17 @@
 //    [최종 수정본] 빛과 그림자를 그리는 메인 셰이더 (color.hlsl)   
 // ============================================================================
 
+
+// 셰이더에서 읽을 점광원 데이터 형식을 C++과 1비트도 틀리지 않게 선언합니다. 
+struct PointLightData
+{
+    float3 PosW; // 셰이더가 읽을 점광원의 3D 공간 위치입니다.
+    float FalloffStart; // 빛이 감소하기 시작하는 거리를 결정합니다.
+    float4 Color; // 조명의 색상 및 광원 세기입니다.
+    float FalloffEnd; // 이 거리보다 멀어지면 빛이 0%로 소멸합니다.
+    float3 pad; // 구조체의 16바이트 정렬을 맞추기 위한 빈칸(패딩)입니다!
+};
+
 //    1. 매 프레임 단 1번만 바뀌는 '공통 데이터 (Pass Constants)' - b0 레지스터   
 cbuffer cbPass : register(b0)
 {
@@ -17,12 +28,10 @@ cbuffer cbPass : register(b0)
     float4x4 gLightViewProj;
     
     
-     //  C++ 구조체와 1비트도 틀리지 않게 점광원 변수 5줄을 선언합니다. 
-    float3 gPointLightPosW;
-    float gPointLightFalloffStart;
-    float4 gPointLightColor;
-    float gPointLightFalloffEnd;
-    float3 pad2;
+   // 단일 조명 변수를 지우고, 여러 개의 조명 데이터를 담을 넉넉한 배열로 교체합니다! 
+    PointLightData gPointLights[4]; // 4개의 점광원을 순회할 수 있는 배열입니다.
+    int gActivePointLightCount; // C++에서 이번 프레임에 실제로 켜져 있다고 알려준 조명의 개수입니다.
+    float3 pad2; // 전체 구조체의 16바이트 정렬을 위한 빈칸입니다.
     
 }; 
 
@@ -313,6 +322,49 @@ PSOutput PSMain(PSInput input)
     Lo += (kD * baseColor.rgb / PI + specular) * gLightColor.rgb * NdotL * shadowFactor;
 
 
+
+
+   //  2. 다중 점광원(Point Lights Array) PBR 연산 
+    // C++이 넘겨준 켜져 있는 조명의 개수(최대 4개)만큼 반복문을 돌며 빛을 계산합니다!
+    for (int i = 0; i < gActivePointLightCount; ++i)
+    { // 조명 루프 시작
+        // i번째 조명의 위치에서 현재 픽셀 위치를 빼서 빛의 3D 방향 벡터(화살표)를 만듭니다.
+        float3 pointLightVec = gPointLights[i].PosW - input.PosW;
+        float d = length(pointLightVec); // 화살표의 길이 = 이 픽셀부터 조명까지의 실제 거리(미터)입니다.
+        
+        if (d < gPointLights[i].FalloffEnd) // 거리가 빛의 소멸 범위 안쪽일 때만 무거운 PBR 수학 연산을 수행합니다! (최적화)
+        { // 유효 범위 블록 시작
+            float3 L_pt = pointLightVec / d; // 방향 벡터를 거리로 나누어 길이가 1인 순수 빛 방향(L) 벡터로 정규화합니다.
+            float3 H_pt = normalize(V + L_pt); // 카메라 시선(V)과 빛 방향(L_pt)의 정확히 중간 각도를 가리키는 하프(Half) 벡터입니다.
+            
+            float NdotL_pt = max(dot(N, L_pt), 0.0f); // 찌그러진 노멀맵 법선(N)과 빛 방향의 내적 (빛을 정면으로 받는지 판별)
+            float NdotH_pt = max(dot(N, H_pt), 0.0f); // 법선과 하프 벡터의 내적 (정반사 강도 판별)
+            float HdotV_pt = max(dot(H_pt, V), 0.0f); // 하프 벡터와 시선의 내적 (프레넬 각도 판별)
+            
+            float NDF_pt = D_GGX(NdotH_pt, roughness); // [PBR] 미세 굴곡 분포: 바닥이 매끄러울수록 둥글고 강하게 빛이 모입니다.
+            float G_pt = G_SchlickGGX(NdotV, NdotL_pt, roughness); // [PBR] 기하 감쇠: 표면의 흠집들이 서로 빛을 가립니다.
+            float3 F_pt = F_Schlick(HdotV_pt, F0); // [PBR] 프레넬 효과: 비스듬히 볼수록 거울처럼 반사됩니다.
+            
+            float3 num_pt = NDF_pt * G_pt * F_pt; // PBR 반사 분자식 (3개 공식을 모두 곱함)
+            float den_pt = 4.0f * NdotV * NdotL_pt + 0.0001f; // PBR 반사 분모식 (0으로 나누기 방지용 0.0001f)
+            float3 spec_pt = num_pt / den_pt; // 픽셀에서 최종적으로 튕겨 나가는 정반사(광택) 빛을 도출합니다.
+            
+            float3 kS_pt = F_pt; // 프레넬 결과값을 튕겨 나가는 빛의 비율로 삼습니다.
+            float3 kD_pt = float3(1.0f, 1.0f, 1.0f) - kS_pt; // 전체 빛에서 튕겨 나간 빛을 빼면 표면에 스며드는 빛(난반사)이 됩니다.
+            kD_pt *= 1.0f - metallic; // 금속(metallic=1)은 빛이 스며들지 않으므로 난반사를 0으로 지워줍니다.
+            
+            // 거리가 멀어질수록 빛이 부드럽게 사그라드는 비율(0.0 ~ 1.0)을 계산합니다.
+            float attenuation = saturate((gPointLights[i].FalloffEnd - d) / (gPointLights[i].FalloffEnd - gPointLights[i].FalloffStart));
+            // 조명의 기본 색상에 감쇠율을 곱해, 현재 픽셀에 도달한 최종 빛의 파워(Radiance)를 결정합니다.
+            float3 radiance = gPointLights[i].Color.rgb * attenuation;
+            
+            //  [핵심] 조명이 여러 개이므로, 계산된 빛 에너지를 기존 픽셀 색상 총합(Lo) 변수에 '누적(+=)' 해 줍니다! 
+            Lo += (kD_pt * baseColor.rgb / PI + spec_pt) * radiance * NdotL_pt;
+        } // 유효 범위 블록 끝
+    } // 조명 루프 끝
+
+    
+    
      // 대기권 산란(Rim Lighting / Fresnel) 연산 
     // 시선과 픽셀의 방향이 수직(테두리)에 가까울수록 수치가 1.0으로 올라갑니다.
      //  테두리 빛도 찌그러진 노멀맵을 사용합니다!
@@ -325,49 +377,7 @@ PSOutput PSMain(PSInput input)
     // 텍스처 고유의 색상에 맞춰 테두리 빛을 뿜어냅니다! (지구는 파란 테두리, 달은 회색 테두리)
     float3 rimColor = baseColor.rgb * rim * 1.5f;
 
-
-
-     // --- 2.  점광원 (Point Light) 연산 시작!  ---
-    // 픽셀의 현재 위치에서 점광원(태양)까지의 3D 화살표(벡터)를 만듭니다.
-    float3 pointLightVec = gPointLightPosW - input.PosW;
-    // 화살표의 길이 = 빛의 근원지까지의 실제 거리(미터)입니다.
-    float d = length(pointLightVec);
-
-    // 거리가 소멸 거리(FalloffEnd)보다 가까울 때만 셰이더 연산을 합니다! (최적화) if문일지라도 if문안의 내용이 더 무겁다면 if문을 써야한다.
-    if (d < gPointLightFalloffEnd)
-    {
-        //  [수정점] 옛날 낡은 공식을 지우고, 점광원도 PBR 공식으로 완벽하게 업그레이드했습니다! 
-        float3 L_pt = pointLightVec / d; // 화살표를 거리로 나누어 길이가 1인 방향 벡터로 정규화합니다.
-        float3 H_pt = normalize(V + L_pt); // 여기서도 에러 원인이었던 viewVec 대신 V를 사용합니다!
-
-        float NdotL_pt = max(dot(N, L_pt), 0.0f); // 점광원 방향과의 내적
-        float NdotH_pt = max(dot(N, H_pt), 0.0f); // 점광원 하프 벡터와의 내적
-        float HdotV_pt = max(dot(H_pt, V), 0.0f); // 에러 방지를 위해 V 사용
-
-        float NDF_pt = D_GGX(NdotH_pt, roughness); // 점광원의 굴곡 분포 계산
-        float G_pt = G_SchlickGGX(NdotV, NdotL_pt, roughness); // 점광원의 기하 감쇠 계산
-        float3 F_pt = F_Schlick(HdotV_pt, F0); // 점광원의 프레넬 반사율 계산
-
-        float3 num_pt = NDF_pt * G_pt * F_pt; // 점광원 정반사 분자
-        float den_pt = 4.0f * NdotV * NdotL_pt + 0.0001f; // 점광원 정반사 분모
-        float3 spec_pt = num_pt / den_pt; // 점광원 최종 튕겨 나간 빛(정반사)
-
-        float3 kS_pt = F_pt; // 점광원의 튕겨 나간 비율
-        float3 kD_pt = float3(1.0f, 1.0f, 1.0f) - kS_pt; // 점광원의 스며든 비율
-        kD_pt *= 1.0f - metallic; // 금속은 빛을 흡수하지 않게 차단
-
-        // [감쇠(Attenuation) 수학 공식] 거리가 멀어질수록 빛이 사그라드는 비율을 계산합니다. 
-        // 거리가 FalloffStart보다 작으면 1.0(최대), End에 다다르면 0.0으로 부드럽게 감소시킵니다.
-        float attenuation = saturate((gPointLightFalloffEnd - d) / (gPointLightFalloffEnd - gPointLightFalloffStart));
-        
-        // 거리에 따라 감쇠된 진짜 점광원 빛 에너지를 구합니다.
-        float3 radiance = gPointLightColor.rgb * attenuation;
-
-        // 점광원의 에너지 역시 빛 저장소(Lo)에 차곡차곡 누적(+=)해 줍니다!
-        Lo += (kD_pt * baseColor.rgb / PI + spec_pt) * radiance * NdotL_pt;
-    }
-    // -------------------------------------------------------------
-
+    
     //  [문제 3 해결] 에러를 내뿜던 누락된 ambient(환경광) 변수를 새로 선언해 줍니다!  
     float3 ambient = float3(0.05f, 0.05f, 0.08f) * baseColor.rgb; // 어두운 우주에 아주 약하게 깔린 기본 빛입니다.
 

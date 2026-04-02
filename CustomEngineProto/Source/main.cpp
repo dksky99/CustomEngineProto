@@ -102,7 +102,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     std::shared_ptr<Texture> moonNormal = renderer.LoadTexture(L"D:\\Git\\CustomEngineProto\\CustomEngineProto\\Resources\\Textures\\N_Moon.jpg");
     std::shared_ptr<Texture> floorNormal = renderer.LoadTexture(L"D:\\Git\\CustomEngineProto\\CustomEngineProto\\Resources\\Textures\\N_Floor.jpg");
 
-
+    //  화면 중앙에 띄울 '십자선(Crosshair)' 이미지를 불러옵니다! 
+    // 인터넷에서 투명한 배경을 가진 PNG 형태의 십자선, 크로스헤어 이미지를 다운로드하여 넣어주세요.
+    std::shared_ptr<Texture> crosshairTex = renderer.LoadTexture(L"Resources/Textures/T_Crosshair.png");
 
     //  태양, 지구, 달, 바닥을 위한 각자의 고유한 재질(Material)을 만듭니다! 
 
@@ -309,6 +311,23 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 
             //   2단계: 씬 갱신! (이때 카메라 액터 안에 달린 CameraComponent도 씬을 통해 자동으로 Update 됩니다!)  
             scene.Update(timer.DeltaTime());
+
+            //  매 프레임 화면 정중앙에 십자선을 그려달라고 렌더러에게 요청합니다! 
+            if (crosshairTex) // 텍스처 로딩에 성공했다면
+            {
+                float uiWidth = 50.0f;  // 십자선 가로 크기 50픽셀
+                float uiHeight = 50.0f; // 십자선 세로 크기 50픽셀
+                // 모니터 한가운데 좌표를 구합니다. (좌상단이 0,0 기준이므로 너비의 절반에서 크기의 절반을 뺍니다)
+                float uiX = (config.WindowWidth / 2.0f) - (uiWidth / 2.0f);
+                float uiY = (config.WindowHeight / 2.0f) - (uiHeight / 2.0f);
+
+                // 렌더러의 UI 대기열에 집어넣습니다!
+                renderer.DrawUI(crosshairTex, uiX, uiY, uiWidth, uiHeight);
+            }
+
+
+
+
 
             //   3단계: 렌더러에게 액터 명부와 카메라 부품(시점)을 던져주고 화면을 그리게 시킵니다.  
             // 카메라 포인터(get)를 렌더러에 넘겨줍니다.

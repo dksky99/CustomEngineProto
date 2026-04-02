@@ -247,6 +247,8 @@ bool D3D12Renderer::Initialize(HWND hwnd, int width, int height) // DX12 초기화 
     if (!BuildConstantBuffers()) return false;
     if (!BuildPostProcessPipelines()) return false;
 
+    // 초기화 맨 마지막에 UI 공장 라인 조립 함수를 호출합니다! 
+    if (!BuildUIPipeline()) return false;
 
     return true; // 초기화 완벽히 성공!
 } // Initialize 함수의 끝
@@ -453,6 +455,9 @@ void D3D12Renderer::Draw()
 
     // 2. 임시 도화지를 재료로 삼아 2D 필터(포스트 프로세스 체인)를 적용합니다.
     RenderPostProcess();
+
+    // 3D 씬과 포스트 프로세스가 모두 끝난 '가장 마지막'에 UI를 덧그려 덮어씌웁니다! 
+    RenderUI();
 
     // 3. 모든 명령을 닫고 제출합니다.
     mCommandList->Close();
@@ -1366,3 +1371,124 @@ void D3D12Renderer::RenderShadows()
     barrier = CD3DX12_RESOURCE_BARRIER::Transition(mShadowMap.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_GENERIC_READ);
     mCommandList->ResourceBarrier(1, &barrier); // 명령서 적용
 } // 그림자 렌더 함수 끝
+
+
+//  게임 루프에서 UI를 띄우라고 요청하면, 즉시 그리지 않고 대기열(Queue)에 담아둡니다. 
+void D3D12Renderer::DrawUI(std::shared_ptr<Texture> tex, float x, float y, float w, float h)
+{ // 함수 시작
+    if (!tex) return; // 텍스처가 비어있으면 무시합니다.
+    mUIQueue.push_back({ tex, x, y, w, h }); // 전달받은 UI 정보를 배열 맨 뒤에 차곡차곡 쌓아둡니다.
+} // 함수 끝
+
+//  UI 전용 계약서와 파이프라인(PSO)을 조립하는 함수입니다. 
+bool D3D12Renderer::BuildUIPipeline()
+{ // 함수 시작
+    // 1. UI용 계약서(루트 시그니처) 작성
+    CD3DX12_ROOT_PARAMETER rootParams[2]; // UI는 딱 2칸만 씁니다.
+
+    // 0번 칸: 루트 상수(Root Constants) 6개 할당 (X, Y, W, H, ScreenW, ScreenH)
+    rootParams[0].InitAsConstants(6, 0); // 32비트 상수 6개를 b0 레지스터에 꽂겠다고 선언합니다.
+
+    // 1번 칸: UI 이미지 텍스처 1장 할당
+    CD3DX12_DESCRIPTOR_RANGE srvTable;
+    srvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0); // t0 레지스터
+    rootParams[1].InitAsDescriptorTable(1, &srvTable);
+
+    // 샘플러 (텍스처를 부드럽게 읽어옵니다)
+    D3D12_STATIC_SAMPLER_DESC sampler = {};
+    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR; // Linear 필터 사용
+    sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    // UI용 루트 시그니처 생성
+    CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc;
+    rootSigDesc.Init(2, rootParams, 1, &sampler, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+
+    ComPtr<ID3DBlob> signature, error;
+    D3D12SerializeRootSignature(&rootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1, &signature, &error);
+    mDevice->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(&mUIRootSig));
+
+    // 2. 셰이더 컴파일
+    ComPtr<ID3DBlob> vs, ps;
+    UINT compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+    D3DCompileFromFile(L"Source/Shaders/ui.hlsl", nullptr, nullptr, "VSMain", "vs_5_0", compileFlags, 0, &vs, nullptr);
+    D3DCompileFromFile(L"Source/Shaders/ui.hlsl", nullptr, nullptr, "PSMain", "ps_5_0", compileFlags, 0, &ps, nullptr);
+
+    // 3. UI 전용 파이프라인(PSO) 세팅
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+    psoDesc.InputLayout = { nullptr, 0 }; // 정점 버퍼 안 씀! (셰이더에서 자체 생성)
+    psoDesc.pRootSignature = mUIRootSig.Get();
+    psoDesc.VS = { reinterpret_cast<BYTE*>(vs->GetBufferPointer()), vs->GetBufferSize() };
+    psoDesc.PS = { reinterpret_cast<BYTE*>(ps->GetBufferPointer()), ps->GetBufferSize() };
+    psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+    psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE; // UI는 양면 렌더링
+
+    // [투명도 블렌딩 활성화] 배경과 자연스럽게 섞이도록 세팅
+    D3D12_BLEND_DESC blendDesc = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+    blendDesc.RenderTarget[0].BlendEnable = TRUE;
+    blendDesc.RenderTarget[0].SrcBlend = D3D12_BLEND_SRC_ALPHA;
+    blendDesc.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+    blendDesc.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+    blendDesc.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+    blendDesc.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_ZERO;
+    blendDesc.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    psoDesc.BlendState = blendDesc;
+
+    psoDesc.DepthStencilState.DepthEnable = FALSE; // UI는 깊이(Z버퍼) 무시하고 무조건 제일 위에 그림!
+    psoDesc.SampleMask = UINT_MAX;
+    psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    psoDesc.NumRenderTargets = 1;
+    psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    psoDesc.SampleDesc.Count = 1;
+
+    mDevice->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&mPsoUI));
+
+    return true;
+} // 함수 끝
+
+//  대기열에 쌓인 UI들을 실제로 화면에 찍어내는 렌더링 함수입니다. 
+void D3D12Renderer::RenderUI()
+{ // 함수 시작
+    if (mUIQueue.empty()) return; // 띄울 UI가 없으면 함수를 즉시 종료합니다.
+
+    // 포스트 프로세싱이 끝나고 'PRESENT(출력 대기)' 상태로 변해있던 백버퍼 도화지를 다시 '그리기(RTV)' 상태로 되돌립니다.
+    CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+        mSwapChainBuffer[mCurrBackBuffer].Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    mCommandList->ResourceBarrier(1, &barrier);
+
+    // 백버퍼 안경(RTV)을 다시 장착합니다. (Z-버퍼는 UI에 필요 없으므로 nullptr 처리)
+    CD3DX12_CPU_DESCRIPTOR_HANDLE finalRtv(mRtvHeap->GetCPUDescriptorHandleForHeapStart(), mCurrBackBuffer, mRtvDescriptorSize);
+    mCommandList->OMSetRenderTargets(1, &finalRtv, FALSE, nullptr);
+
+    // UI용 계약서와 파이프라인을 교체 장착합니다.
+    mCommandList->SetGraphicsRootSignature(mUIRootSig.Get());
+    mCommandList->SetPipelineState(mPsoUI.Get());
+    mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+    // 대기열에 쌓인 모든 UI를 하나씩 꺼내서 그립니다.
+    for (const auto& sprite : mUIQueue)
+    { // 루프 시작
+        // 1. 루트 상수(Root Constants) 세팅
+        // X, Y, W, H, ScreenW, ScreenH 순서대로 6개의 값을 배열로 묶습니다.
+        float uiData[6] = { sprite.X, sprite.Y, sprite.W, sprite.H, (float)mClientWidth, (float)mClientHeight };
+
+        // 셰이더의 0번 슬롯에 이 6개의 실수 데이터를 초고속으로 직격탄으로 꽂아 넣습니다!
+        mCommandList->SetGraphicsRoot32BitConstants(0, 6, uiData, 0);
+
+        // 2. UI 이미지(텍스처) 세팅
+        // 셰이더의 1번 슬롯에 텍스처 뷰가 있는 서랍장 위치를 알려줍니다.
+        mCommandList->SetGraphicsRootDescriptorTable(1, sprite.Tex->SrvGpuHandle);
+
+        // 3. 그리기 명령! (정점 6개를 이용해서 사각형 1개를 찍어냅니다)
+        mCommandList->DrawInstanced(6, 1, 0, 0);
+    } // 루프 끝
+
+    mUIQueue.clear(); // 이번 프레임의 UI를 다 그렸으므로 대기열을 싹 비워줍니다.
+
+    // 렌더링이 끝났으니 백버퍼 도화지를 모니터에 출력할 수 있도록 다시 'PRESENT' 상태로 전환합니다.
+    barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+        mSwapChainBuffer[mCurrBackBuffer].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
+    mCommandList->ResourceBarrier(1, &barrier);
+} // 함수 끝

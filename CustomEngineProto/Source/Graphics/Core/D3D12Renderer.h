@@ -78,6 +78,17 @@ struct InstanceData
     float Metallic = 0.0f;
     DirectX::XMFLOAT3 padding = { 0.0f, 0.0f, 0.0f }; // 16바이트 정렬을 위해 남은 12바이트(float3)를 빈칸으로 채웁니다.
 };
+
+
+//  UI 렌더링 대기열에 담아둘 데이터 패키지(스프라이트 구조체)를 선언합니다. 
+struct SpriteData
+{ // 구조체 시작
+    std::shared_ptr<Texture> Tex; // 띄울 이미지(텍스처) 포인터입니다.
+    float X, Y;                   // 모니터에 띄울 좌상단 픽셀 좌표입니다.
+    float W, H;                   // 띄울 이미지의 가로/세로 픽셀 크기입니다.
+}; // 구조체 끝
+
+
 // 
 //같은 텍스처(재질)를 공유하는 물체들을 묶어 한 번에 그리기 위한 '배치(Batch) 그룹' 명부입니다! 
 struct RenderBatch
@@ -120,6 +131,10 @@ public: // 외부에서 호출할 수 있는 퍼블릭 함수들입니다.
     void Draw(); // 매 프레임마다 호출되어 화면을 특정 색상으로 지우고(Clear) 화면에 출력(Present)하는 함수입니다.
     void FlushCommandQueue(); // CPU가 GPU의 작업이 모두 끝날 때까지 기다려주는(동기화) 함수입니다.
 
+    //  게임 로직(main.cpp)에서 이 함수를 부르면 UI가 화면에 띄워집니다! 
+   // 사용법: DrawUI(이미지, X좌표, Y좌표, 너비, 높이);
+    void DrawUI(std::shared_ptr<Texture> tex, float x, float y, float w, float h);
+
     //  외부(메인 함수)에서 기본 큐브 모델을 액터에게 나눠줄 수 있게 메시 포인터를 반환합니다. 
     std::shared_ptr<Mesh> GetDefaultMesh() const { return mDefaultBoxMesh; }
     //   [추가점] 렌더러가 들고 있는 기본 머티리얼을 메인 게임 로직에서 가져다 쓸 수 있도록 함수를 뚫어줍니다.  
@@ -150,6 +165,10 @@ private:
 
     // 섀도우 맵(그림자 텍스처) 자원을 생성하는 전용 함수입니다. 
     bool BuildShadowMap();
+
+    // UI 렌더링 전용 공장 라인과 렌더링 함수를 선언합니다. 
+    bool BuildUIPipeline();
+    void RenderUI();
 
     //  플레이어 시점이 아니라 '태양 시점'에서 깊이(그림자)만 그리는 함수입니다. 
     void RenderShadows();
@@ -199,6 +218,11 @@ private: // 클래스 내부에서만 접근 가능한 그래픽스 인터페이스 객체들입니다.
     ComPtr<ID3D12PipelineState> mPsoBlurV; // 세로 가우시안 블러 라인
     ComPtr<ID3D12PipelineState> mPsoComposite; // 두 화면 합성 라인
     //   =========================================================================  
+
+     //  UI 전용 루트 시그니처와 PSO, 그리고 대기열(Queue) 변수를 선언합니다. 
+    ComPtr<ID3D12RootSignature> mUIRootSig; // UI용 통신 계약서
+    ComPtr<ID3D12PipelineState> mPsoUI;     // UI용 파이프라인
+    std::vector<SpriteData> mUIQueue;       // 매 프레임 그려질 UI 목록 대기열
 
     ComPtr<ID3D12Fence> mFence; // CPU와 GPU의 작업 완료 타이밍을 맞추기 위한 동기화 객체(울타리)입니다.
     UINT64 mCurrentFence = 0; // 현재 CPU가 GPU에게 발급한 대기표(펜스 값) 번호를 저장합니다.

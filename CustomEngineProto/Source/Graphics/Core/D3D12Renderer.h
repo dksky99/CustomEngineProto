@@ -6,6 +6,7 @@
 #include <DirectXMath.h> // 3D 수학 연산(벡터, 위치 등)을 위한 헤더를 포함합니다.
 #include <DirectXPackedVector.h> // 압축된 수학 데이터 타입을 위한 헤더를 포함합니다.
 #include "d3dx12.h" // D3D12 구조체 초기화를 돕는 헬퍼 헤더를 포함합니다.
+#include <string> //  텍스트(글자)를 받기 위해 string 헤더를 추가합니다. 
 
 // 렌더러가 새롭게 도입된 씬(Scene) 개념을 인지할 수 있도록 전방 선언(Forward Declaration)을 해줍니다. 
 class Scene; // Scene이라는 클래스가 외부에 존재함을 컴파일러에게 미리 알려줍니다.
@@ -86,6 +87,10 @@ struct SpriteData
     std::shared_ptr<Texture> Tex; // 띄울 이미지(텍스처) 포인터입니다.
     float X, Y;                   // 모니터에 띄울 좌상단 픽셀 좌표입니다.
     float W, H;                   // 띄울 이미지의 가로/세로 픽셀 크기입니다.
+
+    // 텍스처에서 사용할 특정 영역(잘라내기)을 지정하는 변수들입니다.
+    float U = 0.0f, V = 0.0f;     // 시작점 (0.0 ~ 1.0)
+    float UW = 1.0f, VH = 1.0f;   // 잘라낼 너비와 높이 비율 (1.0 = 전체)
 }; // 구조체 끝
 
 
@@ -133,8 +138,11 @@ public: // 외부에서 호출할 수 있는 퍼블릭 함수들입니다.
 
     //  게임 로직(main.cpp)에서 이 함수를 부르면 UI가 화면에 띄워집니다! 
    // 사용법: DrawUI(이미지, X좌표, Y좌표, 너비, 높이);
-    void DrawUI(std::shared_ptr<Texture> tex, float x, float y, float w, float h);
-
+     //  잘라내기 정보(UV)를 선택적으로 받을 수 있도록 매개변수를 추가했습니다. 
+    void DrawUI(std::shared_ptr<Texture> tex, float x, float y, float w, float h,
+        float u = 0.0f, float v = 0.0f, float uw = 1.0f, float vh = 1.0f);
+    //문자열(std::string)을 던지면, 렌더러가 알아서 글자별로 잘라서 화면에 그려주는 마법의 함수입니다! 
+    void DrawTextUI(std::shared_ptr<Texture> fontTex, const std::string& text, float x, float y, float size);
     //  외부(메인 함수)에서 기본 큐브 모델을 액터에게 나눠줄 수 있게 메시 포인터를 반환합니다. 
     std::shared_ptr<Mesh> GetDefaultMesh() const { return mDefaultBoxMesh; }
     //   [추가점] 렌더러가 들고 있는 기본 머티리얼을 메인 게임 로직에서 가져다 쓸 수 있도록 함수를 뚫어줍니다.  

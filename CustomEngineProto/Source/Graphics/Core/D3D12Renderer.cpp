@@ -1373,11 +1373,13 @@ void D3D12Renderer::RenderShadows()
 } // 그림자 렌더 함수 끝
 
 
-//  게임 루프에서 UI를 띄우라고 요청하면, 즉시 그리지 않고 대기열(Queue)에 담아둡니다. 
-void D3D12Renderer::DrawUI(std::shared_ptr<Texture> tex, float x, float y, float w, float h)
+// 자르기(UV) 정보를 추가로 받아서 대기열에 넣도록 수정되었습니다. 
+void D3D12Renderer::DrawUI(std::shared_ptr<Texture> tex, float x, float y, float w, float h, float u, float v, float uw, float vh)
 { // 함수 시작
     if (!tex) return; // 텍스처가 비어있으면 무시합니다.
-    mUIQueue.push_back({ tex, x, y, w, h }); // 전달받은 UI 정보를 배열 맨 뒤에 차곡차곡 쌓아둡니다.
+
+    // 넘겨받은 위치 크기 정보와 자르기 정보를 묶어 배열(대기열) 맨 뒤에 쌓습니다.
+    mUIQueue.push_back({ tex, x, y, w, h, u, v, uw, vh });
 } // 함수 끝
 
 //  UI 전용 계약서와 파이프라인(PSO)을 조립하는 함수입니다. 
@@ -1387,7 +1389,7 @@ bool D3D12Renderer::BuildUIPipeline()
     CD3DX12_ROOT_PARAMETER rootParams[2]; // UI는 딱 2칸만 씁니다.
 
     // 0번 칸: 루트 상수(Root Constants) 6개 할당 (X, Y, W, H, ScreenW, ScreenH)
-    rootParams[0].InitAsConstants(6, 0); // 32비트 상수 6개를 b0 레지스터에 꽂겠다고 선언합니다.
+    rootParams[0].InitAsConstants(12, 0); // 32비트 상수 6개를 b0 레지스터에 꽂겠다고 선언합니다.
 
     // 1번 칸: UI 이미지 텍스처 1장 할당
     CD3DX12_DESCRIPTOR_RANGE srvTable;
@@ -1467,23 +1469,24 @@ void D3D12Renderer::RenderUI()
     mCommandList->SetPipelineState(mPsoUI.Get());
     mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-    // 대기열에 쌓인 모든 UI를 하나씩 꺼내서 그립니다.
+    // 대기열 순회 그리기
     for (const auto& sprite : mUIQueue)
     { // 루프 시작
-        // 1. 루트 상수(Root Constants) 세팅
-        // X, Y, W, H, ScreenW, ScreenH 순서대로 6개의 값을 배열로 묶습니다.
-        float uiData[6] = { sprite.X, sprite.Y, sprite.W, sprite.H, (float)mClientWidth, (float)mClientHeight };
+        //  셰이더와 완벽히 규격이 일치하는 12칸짜리 float 배열을 만들어 데이터를 꽉 채웁니다! 
+        float uiData[12] = {
+            sprite.X, sprite.Y, sprite.W, sprite.H, // 화면 위치 및 크기
+            (float)mClientWidth, (float)mClientHeight, // 화면 전체 해상도
+            0.0f, 0.0f, // 16바이트 정렬을 위한 빈칸 2개 (padding)
+            sprite.U, sprite.V, sprite.UW, sprite.VH // 이미지 잘라내기(UV) 정보
+        };
 
-        // 셰이더의 0번 슬롯에 이 6개의 실수 데이터를 초고속으로 직격탄으로 꽂아 넣습니다!
-        mCommandList->SetGraphicsRoot32BitConstants(0, 6, uiData, 0);
+        // 셰이더의 0번 슬롯(b0)에 이 12개의 실수(48바이트)를 빛의 속도로 꽂아 넣습니다!
+        mCommandList->SetGraphicsRoot32BitConstants(0, 12, uiData, 0);
 
-        // 2. UI 이미지(텍스처) 세팅
-        // 셰이더의 1번 슬롯에 텍스처 뷰가 있는 서랍장 위치를 알려줍니다.
-        mCommandList->SetGraphicsRootDescriptorTable(1, sprite.Tex->SrvGpuHandle);
-
-        // 3. 그리기 명령! (정점 6개를 이용해서 사각형 1개를 찍어냅니다)
-        mCommandList->DrawInstanced(6, 1, 0, 0);
+        mCommandList->SetGraphicsRootDescriptorTable(1, sprite.Tex->SrvGpuHandle); // 텍스처 장착
+        mCommandList->DrawInstanced(6, 1, 0, 0); // 6개 정점(사각형) 그리기!
     } // 루프 끝
+
 
     mUIQueue.clear(); // 이번 프레임의 UI를 다 그렸으므로 대기열을 싹 비워줍니다.
 
@@ -1492,3 +1495,39 @@ void D3D12Renderer::RenderUI()
         mSwapChainBuffer[mCurrBackBuffer].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
     mCommandList->ResourceBarrier(1, &barrier);
 } // 함수 끝
+
+// 문자열을 받아 비트맵 폰트를 잘라내 렌더링하는 핵심 텍스트 함수입니다! 
+void D3D12Renderer::DrawTextUI(std::shared_ptr<Texture> fontTex, const std::string& text, float x, float y, float size)
+{ // 함수 시작
+    if (!fontTex) return; // 폰트 텍스처가 없으면 종료합니다.
+
+    float cursorX = x; // 글자가 써질 X 좌표(커서)를 시작 위치로 잡습니다.
+
+    // 문자열(text)에 들어있는 글자(char)를 하나씩 순회하며 꺼냅니다.
+    for (char c : text)
+    { // 글자 루프 시작
+        if (c == ' ') // 만약 띄어쓰기(스페이스바)라면
+        { // 띄어쓰기 블록
+            cursorX += size * 0.5f; // 그리지 않고 커서만 글자 크기의 절반만큼 우측으로 이동시킵니다.
+            continue; // 다음 글자로 넘어갑니다.
+        } // 띄어쓰기 블록 끝
+
+        // 16x16 격자로 256개의 문자가 꽉 찬 스프라이트 폰트 이미지를 가정합니다. (ASCII 규격)
+        int ascii = static_cast<int>(c); // 글자를 아스키코드(숫자)로 변환합니다. (예: 'A' = 65)
+
+        int col = ascii % 16; // 16으로 나눈 나머지가 가로(열) 위치가 됩니다.
+        int row = ascii / 16; // 16으로 나눈 몫이 세로(행) 위치가 됩니다.
+
+        // 해당 칸(글자)을 정확히 오려내기 위한 UV 수학 연산입니다!
+        float u = col / 16.0f; // 가로 시작점 (0.0 ~ 1.0)
+        float v = row / 16.0f; // 세로 시작점 (0.0 ~ 1.0)
+        float uw = 1.0f / 16.0f; // 글자 한 개의 가로 크기 비율 (1/16)
+        float vh = 1.0f / 16.0f; // 글자 한 개의 세로 크기 비율 (1/16)
+
+        // 오려낸 글자 한 개를 화면(cursorX, y)에 그려달라고 UI 시스템에 명령합니다!
+        DrawUI(fontTex, cursorX, y, size, size, u, v, uw, vh);
+
+        // 한 글자를 그렸으니, 다음 글자가 겹치지 않게 커서를 글자 크기(장평)만큼 우측으로 밀어줍니다.
+        cursorX += size * 0.6f;
+    } // 글자 루프 끝
+}

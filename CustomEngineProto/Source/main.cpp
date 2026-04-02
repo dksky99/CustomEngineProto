@@ -105,6 +105,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     //  화면 중앙에 띄울 '십자선(Crosshair)' 이미지를 불러옵니다! 
     // 인터넷에서 투명한 배경을 가진 PNG 형태의 십자선, 크로스헤어 이미지를 다운로드하여 넣어주세요.
     std::shared_ptr<Texture> crosshairTex = renderer.LoadTexture(L"Resources/Textures/T_Crosshair.png");
+    // 글자 모양이 격자로 들어있는 '스프라이트 폰트 이미지'를 로드합니다! 
+    // 인터넷에서 16x16 격자로 된 ASCII Bitmap Font PNG 이미지를 찾아 넣어주세요. (구글 검색: "16x16 ascii bitmap font png")
+    std::shared_ptr<Texture> fontTex = renderer.LoadTexture(L"Resources/Textures/T_Font.png");
 
     //  태양, 지구, 달, 바닥을 위한 각자의 고유한 재질(Material)을 만듭니다! 
 
@@ -231,6 +234,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     GameTimer timer; // 위에서 우리가 만든 게임 타이머 객체의 인스턴스를 생성합니다.
     timer.Reset(); // 본격적인 렌더링 루프에 들어가기 직전, 타이머의 기준점을 현재 시간으로 초기화합니다.
 
+    // 초당 프레임(FPS)을 계산하기 위한 변수들을 선언합니다. 
+    int frameCnt = 0; // 이번 1초 동안 화면을 몇 번 그렸는지 세는 카운터
+    float timeElapsed = 0.0f; // 시간이 얼마나 지났는지 누적하는 변수
+    int mFPS = 0; // 계산이 끝난 최종 FPS 수치
+
+
    
     // --- [ECS 아키텍처 완성] 카메라를 '액터(Actor)'로 취급하여 씬에 조립해 넣습니다!  ---
 
@@ -280,6 +289,20 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             timer.Tick(); // 매 프레임 타이머를 한 번 틱(Tick)하여 최신 델타 타임(DeltaTime)을 계산해 냅니다.
             // TODO: Update(timer.DeltaTime()); // 계산된 델타 타임을 전달하여 게임 속 오브젝트들의 상태(위치, 물리 등)를 갱신합니다.
             
+             //  [FPS 연산 로직] 매 프레임마다 카운터를 1 올리고, 지난 시간을 더합니다. 
+            frameCnt++;
+            timeElapsed += timer.DeltaTime();
+
+            // 만약 1초(1.0f) 이상 지났다면!
+            if (timeElapsed >= 1.0f)
+            {
+                mFPS = frameCnt; // 지난 1초 동안 센 프레임 횟수를 최종 FPS로 확정 짓습니다!
+                frameCnt = 0; // 카운터를 0으로 리셋합니다.
+                timeElapsed -= 1.0f; // 누적 시간에서 1초를 빼서 다음 1초를 준비합니다.
+            }
+
+
+
             //   1단계: 이번 프레임의 마우스/키보드 입력을 전역 통제 센터에 수집합니다!  
             InputManager::GetInstance().Update();
 
@@ -325,7 +348,24 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                 renderer.DrawUI(crosshairTex, uiX, uiY, uiWidth, uiHeight);
             }
 
+            // 좌측 상단에 실시간 FPS 수치를 문자로 그려냅니다! 
+            if (fontTex)
+            {
+                // std::to_string 으로 정수(FPS)를 문자열로 바꾼 뒤, "FPS: " 와 이어붙입니다.
+                std::string fpsText = "FPS: " + std::to_string(mFPS);
 
+                // 렌더러에게 폰트 텍스처, 텍스트 내용, 화면 좌표(X: 10, Y: 10), 글자 크기(24픽셀)를 전달합니다!
+                renderer.DrawTextUI(fontTex, fpsText, 10.0f, 10.0f, 24.0f);
+
+                // 보너스: 현재 카메라(플레이어)의 3D 좌표도 그 아래에 띄워봅니다!
+                DirectX::XMFLOAT3 camPos = cameraComp->GetPosition();
+                std::string posText = "POS: X=" + std::to_string((int)camPos.x) +
+                    " Y=" + std::to_string((int)camPos.y) +
+                    " Z=" + std::to_string((int)camPos.z);
+
+                // 줄바꿈 효과를 주기 위해 Y 좌표를 40.0f로 내려서 그립니다.
+                renderer.DrawTextUI(fontTex, posText, 10.0f, 40.0f, 20.0f);
+            }
 
 
 

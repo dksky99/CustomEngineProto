@@ -9,6 +9,12 @@ cbuffer UIConstants : register(b0)
     float2 gPos; // UI 이미지가 그려질 모니터 화면의 좌상단 X, Y 픽셀 좌표입니다.
     float2 gSize; // UI 이미지의 가로, 세로 픽셀 크기(Width, Height)입니다.
     float2 gScreenSize; // 현재 모니터(윈도우 창)의 전체 가로, 세로 해상도입니다. (비율 계산용)
+    
+    
+    float2 pad; // 16바이트(float4) 정렬 규칙을 맞추기 위한 빈칸 2개입니다.
+    
+    // 전체 텍스처에서 어느 부분만 잘라서 쓸 것인지 결정하는 UV 정보입니다! 
+    float4 gUVRect; // x: 시작 U, y: 시작 V, z: 자를 너비(U-Width), w: 자를 높이(V-Height)
 }; 
 
 // 2. 화면에 띄울 UI 텍스처(예: 십자선, 체력바 이미지)를 받을 레지스터입니다.
@@ -35,11 +41,15 @@ VSOutput VSMain(uint vid : SV_VertexID) // 시스템이 넘겨주는 정점 번호(0~5)를 받
     // 0번:(0,0) 좌상단, 1번:(1,0) 우상단, 2번:(0,1) 좌하단 ... (시계 방향 순서)
     float2 uvs[6] = { float2(0, 0), float2(1, 0), float2(0, 1), float2(0, 1), float2(1, 0), float2(1, 1) };
     
-    // 현재 정점 번호에 맞는 UV 좌표를 하나 꺼내어 포장 상자에 담습니다.
-    output.TexC = uvs[vid];
+      
+    //  [UV 자르기 수학] 기본 UV(0~1)에 잘라낼 너비/높이를 곱하고, 시작점(U, V)을 더해줍니다! 
+    // 예: "가로 1/16 너비로, 3번째 줄부터 잘라라!" 라는 지시를 완벽히 수행합니다.
+    output.TexC = float2(gUVRect.x + uvs[vid].x * gUVRect.z,
+                         gUVRect.y + uvs[vid].y * gUVRect.w);
     
+     // output.TexC가 아니라 원래 사각형 크기인 uvs[vid]를 곱해야 합니다! 
     // [픽셀 좌표 연산] 기준점(gPos)에서 시작하여, 크기(gSize)에 UV를 곱해 모니터 상의 실제 픽셀 좌표를 만듭니다.
-    float2 pixelPos = gPos + output.TexC * gSize;
+    float2 pixelPos = gPos + uvs[vid] * gSize;
     
     // [NDC 좌표 변환] 모니터 픽셀 좌표(0~1280)를 DX12가 인식하는 화면 좌표계(-1.0 ~ 1.0)로 변환하는 공식입니다.
     // X축: 0을 -1.0으로, ScreenWidth를 1.0으로 변환합니다.
